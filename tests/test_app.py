@@ -52,3 +52,50 @@ def test_maximized_comes_back_maximized_with_the_old_size_behind_it(data_dir):
         assert w.geometry() == "900x550+200+150"
     finally:
         w.destroy()
+
+
+@pytest.fixture
+def app(data_dir, monkeypatch):
+    w = A.App()
+    monkeypatch.setattr(w, "_schedule", lambda: None)  # queue only, no downloads
+    yield w
+    w.destroy()
+
+
+def test_same_link_twice_is_queued_once(app):
+    app._add_from_text("https://youtu.be/a https://youtu.be/a")
+    app._add_from_text("https://youtu.be/a")
+    assert len(app.jobs) == 1
+    assert app.status.get() == "Already in the queue"
+
+
+def test_same_link_in_another_format_is_queued(app):
+    app._add_from_text("https://youtu.be/a")
+    app.v["mode"].set("audio")
+    app._add_from_text("https://youtu.be/a")
+    assert len(app.jobs) == 2
+
+
+def test_resume_everything_leaves_finished_links_alone(app):
+    app._add_from_text("https://youtu.be/a https://youtu.be/b")
+    done, paused = app.jobs.values()
+    done.status, paused.status = "Done", "Paused"
+    app._for_selected(app._resume, all_if_none=True)
+    assert (done.status, paused.status) == ("Done", "Queued")
+
+
+@pytest.mark.parametrize("show, attr", [("_show_options", "options_window"),
+                                        ("_show_log", "log_window")])
+def test_popups_open_centered_over_the_window(app, show, attr):
+    app.geometry("900x500+300+200")
+    app.update()
+    getattr(app, show)()
+    app.after(100, app.quit)
+    app.mainloop()  # let the popup's deferred placement run
+    pop = getattr(app, attr)
+    pop.update()
+    main_cx = app.winfo_rootx() + app.winfo_width() // 2
+    pop_cx = pop.winfo_rootx() + pop.winfo_width() // 2
+    main_cy = app.winfo_rooty() + app.winfo_height() // 2
+    pop_cy = pop.winfo_rooty() + pop.winfo_height() // 2
+    assert abs(main_cx - pop_cx) < 20 and abs(main_cy - pop_cy) < 40

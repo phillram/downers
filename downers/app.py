@@ -73,6 +73,20 @@ def on_screen(geometry: str) -> bool:
     return left <= x + 100 < left + width and top <= y < top + height - 40
 
 
+def center_over(win: tk.Misc, over: tk.Misc | None = None, size: tuple[int, int] | None = None):
+    """Place win in the middle of `over`, or of the screen, kept fully on screen."""
+    win.update_idletasks()
+    w, h = size or (win.winfo_reqwidth(), win.winfo_reqheight())
+    if over is not None and over.winfo_viewable():
+        cx = over.winfo_rootx() + over.winfo_width() // 2
+        cy = over.winfo_rooty() + over.winfo_height() // 2
+    else:
+        cx, cy = win.winfo_screenwidth() // 2, win.winfo_screenheight() // 2
+    x = max(0, min(cx - w // 2, win.winfo_vrootwidth() - w))
+    y = max(0, min(cy - h // 2, win.winfo_vrootheight() - h - 40))
+    win.geometry(f"{w}x{h}+{x}+{y}" if size else f"+{x}+{y}")
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -137,6 +151,8 @@ class App(tk.Tk):
         self.normal_geometry = saved.get("geometry", "")
         if on_screen(self.normal_geometry):
             self.geometry(self.normal_geometry)
+        else:
+            center_over(self)
         dark_title_bar(self)
         self.bind("<Configure>", self._track_geometry, add=True)
         self.deiconify()
@@ -161,6 +177,8 @@ class App(tk.Tk):
         st.configure("Accent.TButton", background=ACCENT, foreground="white")
         st.map("Accent.TButton", background=[("active", "#4752c4")])
         st.configure("Muted.TLabel", foreground=MUTED)
+        st.configure("Bar.TFrame", background=PANEL)
+        st.configure("Bar.TLabel", background=PANEL, foreground=MUTED)
         for w in ("TCheckbutton", "TRadiobutton"):
             st.configure(w, background=BG, indicatorbackground=FIELD,
                          indicatorforeground="white", indicatormargin=(0, 0, 4, 0))
@@ -199,7 +217,20 @@ class App(tk.Tk):
                             state="readonly", width=width)
 
     def _build(self):
-        root = ttk.Frame(self, padding=(10, 8, 10, 6))
+        # Toolbar: every button that isn't tied to a field, in one strip at the top
+        bar = ttk.Frame(self, style="Bar.TFrame", padding=(10, 6))
+        bar.pack(fill="x")
+        # Pause and Resume act on the selection, or on everything if nothing is selected
+        for text, cmd in (("Pause", lambda: self._for_selected(self._pause, all_if_none=True)),
+                          ("Resume", lambda: self._for_selected(self._resume, all_if_none=True)),
+                          ("Remove", lambda: self._for_selected(self._remove)),
+                          ("Clear done", self._clear_done)):
+            ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(0, 4))
+        ttk.Button(bar, text="Log", command=self._show_log).pack(side="right")
+        ttk.Button(bar, text="Options", command=self._show_options).pack(side="right", padx=4)
+        ttk.Label(bar, textvariable=self.status, style="Bar.TLabel").pack(side="right", padx=8)
+
+        root = ttk.Frame(self, padding=(10, 8, 10, 10))
         root.pack(fill="both", expand=True)
 
         add = ttk.Frame(root)
@@ -236,7 +267,7 @@ class App(tk.Tk):
             ttk.Checkbutton(checks, text=text, variable=self.v[key]).pack(side="left", padx=(0, 12))
 
         out = ttk.Frame(root)
-        out.pack(fill="x", pady=(6, 8))
+        out.pack(fill="x", pady=(6, 10))
         ttk.Label(out, text="Save to", style="Muted.TLabel").pack(side="left")
         ttk.Entry(out, textvariable=self.v["output_dir"]).pack(side="left", fill="x",
                                                                expand=True, padx=6)
@@ -261,20 +292,8 @@ class App(tk.Tk):
         scroll.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Button-3>", self._context_menu)
-        self.tree.bind("<Double-1>", lambda e: self._for_selected(self._open_job_folder))
+        self.tree.bind("<Double-1>", self._double_click)
         self.tree.bind("<Delete>", lambda e: self._for_selected(self._remove))
-
-        bar = ttk.Frame(root)
-        bar.pack(fill="x", pady=(6, 0))
-        # Pause and Resume act on the selection, or on everything if nothing is selected
-        for text, cmd in (("Pause", lambda: self._for_selected(self._pause, all_if_none=True)),
-                          ("Resume", lambda: self._for_selected(self._resume, all_if_none=True)),
-                          ("Remove", lambda: self._for_selected(self._remove)),
-                          ("Clear done", self._clear_done)):
-            ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(0, 4))
-        ttk.Button(bar, text="Log", command=self._show_log).pack(side="right")
-        ttk.Button(bar, text="Options", command=self._show_options).pack(side="right", padx=4)
-        ttk.Label(bar, textvariable=self.status, style="Muted.TLabel").pack(side="right", padx=8)
 
         self.menu = tk.Menu(self, tearoff=False)
         for text, fn in (("Pause", self._pause), ("Resume / retry", self._resume),
@@ -342,11 +361,21 @@ class App(tk.Tk):
             self.status.set("Paste a link (http…) first.")
             return
         settings = self.current_settings()
-        for url in urls:
-            self._add_job(Job(url, Settings.from_dict(settings.to_dict())))
+        # The same link with the same settings, not yet finished, is already in hand
+        pending = {(j.url, j.settings.summary()) for j in self.jobs.values()
+                   if j.status != "Done" and j.id not in self.remove_when_stopped}
+        added = 0
+        for url in dict.fromkeys(urls):
+            if (url, settings.summary()) not in pending:
+                self._add_job(Job(url, Settings.from_dict(settings.to_dict())))
+                added += 1
         self.url.set("")
         self._save()
         self._schedule()
+        skipped = len(set(urls)) - added
+        if skipped:
+            self.status.set("Already in the queue" if not added else
+                            f"Added {added}; {skipped} already in the queue")
 
     def _add_job(self, job: Job):
         self.jobs[job.id] = job
@@ -442,7 +471,8 @@ class App(tk.Tk):
         self._update_row(job)
 
     def _resume(self, job: Job):
-        if job.id not in self.threads and job.status in ("Paused", "Error", "Done"):
+        # Not "Done": Resume with nothing selected would re-run every finished link
+        if job.id not in self.threads and job.status in ("Paused", "Error"):
             job.status, job.progress = "Queued", ""
             self._update_row(job)
 
@@ -479,6 +509,10 @@ class App(tk.Tk):
         self.clipboard_append(engine.command_line(job.settings, job.url, archive))
         self.status.set("yt-dlp command copied")
 
+    def _double_click(self, event):
+        if self.tree.identify_region(event.x, event.y) == "cell":
+            self._for_selected(self._open_job_folder)
+
     def _context_menu(self, event):
         row = self.tree.identify_row(event.y)
         if row:
@@ -495,7 +529,8 @@ class App(tk.Tk):
             self.status.set("Clipboard is empty.")
 
     def _browse(self):
-        folder = filedialog.askdirectory(initialdir=self.v["output_dir"].get() or None)
+        folder = filedialog.askdirectory(parent=self,
+                                         initialdir=self.v["output_dir"].get() or None)
         if folder:
             self.v["output_dir"].set(str(Path(folder)))
 
@@ -519,16 +554,23 @@ class App(tk.Tk):
         if at_end:
             box.see("end")
 
-    def _toplevel(self, title, geometry, attr):
+    def _toplevel(self, title, attr, size=None):
+        """A popup window, centered over this one once the caller has filled it."""
         if getattr(self, attr) is not None:
             getattr(self, attr).deiconify()
             getattr(self, attr).lift()
+            getattr(self, attr).focus_set()
             return None
         win = tk.Toplevel(self, bg=BG)
         win.withdraw()  # dark title bar only takes if set before the window shows
-        win.after(20, lambda: (dark_title_bar(win), win.deiconify()))
+
+        def show():
+            center_over(win, self, size)
+            dark_title_bar(win)
+            win.deiconify()
+            win.focus_set()
+        win.after(20, show)
         win.title(title)
-        win.geometry(geometry)
         win.transient(self)
 
         win.protocol("WM_DELETE_WINDOW", lambda: self._close_toplevel(attr))
@@ -543,7 +585,8 @@ class App(tk.Tk):
         self._save()
 
     def _show_log(self):
-        win = self._toplevel("Downers log", "700x320", "log_window")
+        char, line = self.ui_font.measure("x"), self.ui_font.metrics("linespace")
+        win = self._toplevel("Downers log", "log_window", size=(char * 110, line * 22))
         if win is None:
             return
         frame = ttk.Frame(win, padding=6)
@@ -573,7 +616,7 @@ class App(tk.Tk):
         return frame
 
     def _show_options(self):
-        win = self._toplevel("Downers options", "", "options_window")
+        win = self._toplevel("Downers options", "options_window")
         if win is None:
             return
         win.resizable(False, False)
@@ -650,7 +693,11 @@ class App(tk.Tk):
     def _restart(self):
         self._save()
         command = [sys.executable] if FROZEN else [sys.executable, "-m", "downers"]
-        subprocess.Popen(command, cwd=APP_DIR)
+        # Without this, the new exe would reuse this one's unpack folder, which is
+        # deleted as this one exits
+        env = os.environ | {"PYINSTALLER_RESET_ENVIRONMENT": "1"}
+        release_instance()  # or the new one would see this one and bow out
+        subprocess.Popen(command, cwd=APP_DIR, env=env)
         self.destroy()
 
     def _on_close(self):
@@ -674,10 +721,42 @@ class App(tk.Tk):
         super().destroy()
 
 
+_instance_lock = None
+
+
+def single_instance() -> bool:
+    """Claim the one-Downers-at-a-time lock. Two copies would resume the same queue
+    into the same partial files. If another has it, bring that one forward."""
+    global _instance_lock
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        _instance_lock = kernel32.CreateMutexW(None, False, "Local\\Downers.SingleInstance")
+        if ctypes.get_last_error() != 183:  # ERROR_ALREADY_EXISTS
+            return True
+    except Exception:
+        return True
+    user32 = ctypes.windll.user32
+    hwnd = user32.FindWindowW(None, "Downers")
+    if hwnd:
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        user32.SetForegroundWindow(hwnd)
+    return False
+
+
+def release_instance() -> None:
+    global _instance_lock
+    if _instance_lock:
+        ctypes.windll.kernel32.CloseHandle(_instance_lock)
+        _instance_lock = None
+
+
 def main() -> int:
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on scaled displays
     except Exception:
         pass
+    if not single_instance():
+        return 0
     App().mainloop()
     return 0

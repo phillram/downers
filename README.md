@@ -29,7 +29,8 @@ python tools/build_exe.py        # puts Downers.exe, ffmpeg.exe and deno.exe in 
 ## Using it
 
 Paste a link and press Enter. **Paste** adds every link on the clipboard. Each link keeps the
-settings it was added with, so a 1080p video and an MP3 can sit in the same queue.
+settings it was added with, so a 1080p video and an MP3 can sit in the same queue. A link
+already waiting in the same format isn't added twice.
 
 | Setting | Choices | Default |
 | --- | --- | --- |
@@ -46,9 +47,11 @@ Files go to `Downloads\Downers` unless you choose another folder. A playlist get
 folder with numbered files. A channel gets a folder per tab, such as `Name - Videos` and
 `Name - Shorts`; link to `youtube.com/@name/videos` for the videos alone.
 
-**Pause** and **Resume** act on the selected rows, or on everything if none are selected. A
-paused download keeps its partial file and continues from the same byte. Finished playlist
-items are skipped. Closing Downers mid-download pauses it, and the queue is back next time.
+**Pause** and **Resume** act on the selected rows, or on everything if none are selected.
+Resume also retries failed links. A paused download keeps its partial file and continues from
+the same byte. Finished playlist items are skipped. Closing Downers mid-download pauses it,
+and the queue is back next time. Only one Downers runs at a time; opening it again brings the
+open one forward.
 
 Right-click a row to open its folder, copy its link, or copy the equivalent yt-dlp command.
 Double-click opens the folder. Delete removes the row; downloaded files stay.
