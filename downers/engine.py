@@ -23,6 +23,8 @@ from typing import Callable
 import yt_dlp
 from yt_dlp.utils import DownloadCancelled
 
+from downers.paths import APP_DIR
+
 VIDEO_QUALITIES = ["best", "2160", "1440", "1080", "720", "480", "360"]
 CONTAINERS = ["mp4", "mkv"]
 AUDIO_FORMATS = ["original", "mp3", "m4a", "opus", "flac", "wav"]
@@ -80,7 +82,10 @@ class Settings:
 # ---------------------------------------------------------------- helpers
 
 def _bundled(name: str, module: str, finder: str) -> str | None:
-    """A program from PATH, else the copy a pip package ships."""
+    """A program beside Downers.exe, else from PATH, else the copy a pip package ships."""
+    beside = APP_DIR / f"{name}.exe"
+    if beside.exists():
+        return str(beside)
     found = shutil.which(name)
     if found:
         return found

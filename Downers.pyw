@@ -5,6 +5,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from downers.app import main
+from downers import updater
+
+updater.activate()  # before anything imports yt_dlp
+
+from downers.app import main  # noqa: E402
 
 main()

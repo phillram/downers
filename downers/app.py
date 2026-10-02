@@ -15,13 +15,10 @@ from tkinter import filedialog, font, messagebox, ttk
 
 import yt_dlp
 
-from downers import __version__, engine
+from downers import __version__, engine, updater
 from downers.engine import Job, Settings
-
-DATA_DIR = Path(os.environ.get("APPDATA", Path.home())) / "Downers"
-SETTINGS_FILE = DATA_DIR / "settings.json"
-QUEUE_FILE = DATA_DIR / "queue.json"
-ARCHIVE_FILE = DATA_DIR / "archive.txt"
+from downers.paths import (APP_DIR, ARCHIVE_FILE, DATA_DIR, FROZEN, ICON, QUEUE_FILE,
+                           SETTINGS_FILE)
 
 BG, PANEL, FIELD, HOVER = "#1e1f22", "#2b2d31", "#383a40", "#4e5058"
 FG, MUTED, ACCENT = "#e6e6e6", "#9a9ca3", "#5865f2"
@@ -52,6 +49,9 @@ def dark_title_bar(window: tk.Misc) -> None:
         for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE, and its pre-20H1 number
             if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(on), 4) == 0:
                 break
+        # Repaint the frame in case the window is already showing
+        flags = 0x27  # SWP_NOSIZE | NOMOVE | NOZORDER | FRAMECHANGED | NOACTIVATE
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, flags)
     except Exception:
         pass
 
@@ -59,8 +59,13 @@ def dark_title_bar(window: tk.Misc) -> None:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.withdraw()  # until the dark title bar is set, or it can stay white
         self.title("Downers")
         self.configure(bg=BG)
+        try:
+            self.iconbitmap(default=str(ICON))  # also applies to the other windows
+        except tk.TclError:
+            pass
         DATA_DIR.mkdir(parents=True, exist_ok=True)
 
         self.events: queue.Queue = queue.Queue()
@@ -101,13 +106,15 @@ class App(tk.Tk):
                 self._add_job(Job.from_dict(data))
             except Exception:
                 pass
-        self._log(f"Downers {__version__}, yt-dlp {yt_dlp.version.__version__}", "muted")
+        self._log(f"Downers {__version__}, yt-dlp {yt_dlp.version.__version__}"
+                  + (" (updated copy)" if updater.active else ""), "muted")
         if not engine.ffmpeg_path():
             self._log("ffmpeg not found: merging, MP3 and thumbnails will fail. "
                       "Run: pip install imageio-ffmpeg", "warn")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         dark_title_bar(self)
+        self.deiconify()
         self._refresh_status()
         # Size to the controls, so it fits at any display scaling
         self.update_idletasks()
@@ -571,26 +578,35 @@ class App(tk.Tk):
         if self.threads:
             messagebox.showinfo("Downers", "Pause or finish the downloads first.", parent=self)
             return
-        self.update_btn.configure(state="disabled", text="Updating…")
+        self.update_btn.configure(state="disabled", text="Checking…")
+        current, proxy = yt_dlp.version.__version__, self.v["proxy"].get().strip()
 
         def work():
-            proc = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-U", "yt-dlp[default]"],
-                capture_output=True, text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            self.after(0, done, proc.returncode == 0, (proc.stdout + proc.stderr).strip())
+            try:
+                result = updater.update(current, proxy)
+            except Exception as e:
+                result = None, f"Update failed: {e}"
+            self.after(0, done, *result)
 
-        def done(ok, output):
-            for line in output.splitlines()[-3:]:
-                self._log(line, "info" if ok else "error")
+        def done(changed, message):
+            self._log(message, "error" if changed is None else "info")
             try:
                 self.update_btn.configure(state="normal", text="Update yt-dlp")
             except tk.TclError:
                 pass
-            messagebox.showinfo("Downers", "yt-dlp updated. Restart Downers to use it."
-                                if ok else "Update failed; see the log.", parent=self)
+            if changed and messagebox.askyesno(
+                    "Downers", f"{message}\nRestart Downers now to use it?", parent=self):
+                self._restart()
+            elif not changed:
+                messagebox.showinfo("Downers", message, parent=self)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _restart(self):
+        self._save()
+        command = [sys.executable] if FROZEN else [sys.executable, "-m", "downers"]
+        subprocess.Popen(command, cwd=APP_DIR)
+        self.destroy()
 
     def _on_close(self):
         if self.threads:

@@ -4,7 +4,30 @@ A small, dark window for downloading video and audio with
 [yt-dlp](https://github.com/yt-dlp/yt-dlp). Paste a link to a video, a playlist or a whole
 channel, pick the format, and it downloads. You can pause and pick up where you left off.
 
-## Setup
+## Two ways to run it
+
+### The exe (no Python needed)
+
+Run **`dist\Downers\Downers.exe`**. Keep the whole `Downers` folder together, because the exe
+uses the two programs beside it:
+
+| File | Purpose |
+|---|---|
+| `Downers.exe` | The app, with yt-dlp built in |
+| `ffmpeg.exe` | Merging video and audio, converting audio, embedding thumbnails |
+| `deno.exe` | Solving YouTube's JavaScript challenges, needed for full-quality formats |
+
+You can move or copy the folder anywhere, including to another Windows PC. For a desktop
+shortcut, right-click `Downers.exe` → **Send to** → **Desktop**.
+
+To build or rebuild the folder after a code change:
+
+```bash
+pip install pyinstaller -r requirements.txt
+python tools/build_exe.py
+```
+
+### From source
 
 Needs Python 3.10 or newer.
 
@@ -12,20 +35,12 @@ Needs Python 3.10 or newer.
 pip install -r requirements.txt
 ```
 
-That brings in yt-dlp, plus a bundled ffmpeg (for merging, converting and embedding) and Deno
-(which YouTube now needs for full-quality formats). Nothing has to be installed system-wide. If
-`ffmpeg` or `deno` is already on your `PATH`, that copy is used instead.
+That installs yt-dlp, plus copies of ffmpeg and Deno, so nothing has to be installed
+system-wide. If `ffmpeg` or `deno` is already on your `PATH`, that copy is used instead.
 
-## Running
-
-Double-click **`Downers.pyw`**, or:
-
-```bash
-python -m downers
-```
-
-`Downers.pyw` runs with the Python named on its first line
-(`C:\Coding\.venv\Scripts\pythonw.exe`). Edit that line if you use a different Python.
+Double-click **`Downers.pyw`**, or run `python -m downers`. `Downers.pyw` uses the Python named
+on its first line (`C:\Coding\.venv\Scripts\pythonw.exe`); edit that line if yours is
+elsewhere.
 
 ## Using it
 
@@ -91,7 +106,7 @@ removes it from the queue (files already downloaded are kept).
 | At once | How many links download at the same time (1–4) |
 | Prefer H.264/AAC | Picks formats that old TVs, phones and editors can play. YouTube usually only offers H.264 up to 1080p. |
 | Remember finished videos | Records what's been downloaded and skips it next time. Handy for re-running a channel to fetch only new uploads. |
-| Update yt-dlp | YouTube changes often. If downloads start failing, update, then restart Downers. |
+| Update yt-dlp | YouTube changes often. If downloads start failing, press this; it fetches the latest yt-dlp (through your proxy, if one is set) and offers to restart. Works in the exe too, with no rebuild needed. |
 
 Changes apply to links added afterward.
 
@@ -100,4 +115,6 @@ Changes apply to links added afterward.
 ## Where things are kept
 
 Settings, the saved queue and the "remember finished videos" list live in
-`%APPDATA%\Downers\`.
+`%APPDATA%\Downers\`. So does any newer yt-dlp fetched by **Update yt-dlp**, in a `yt-dlp`
+folder. It's used only while it's newer than the built-in one, and deleting the folder goes
+back to the built-in one.
