@@ -1,0 +1,52 @@
+name: Build
+
+# Only a version tag builds, once per release. Pushes to main and pull
+# requests do not. A manual run builds without publishing anything.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Downers.exe
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pytest
+
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Build the executable
+        run: python tools/build_exe.py
+
+      # One zip, so the exe and the two helpers it needs stay together
+      - name: Zip
+        run: Compress-Archive -Path Downers.exe, ffmpeg.exe, deno.exe -DestinationPath Downers.zip
+
+      # No upload-artifact step: artifacts count against Actions storage.
+      # The zip goes to the release instead, which does not.
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}"
+          Downers.zip
+          --title "Downers ${{ github.ref_name }}"
+          --generate-notes

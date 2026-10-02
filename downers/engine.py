@@ -55,6 +55,7 @@ class Settings:
     items: str = ""                     # e.g. "1-10" or "1,4,7-9"
     archive: bool = False
     cookies: str = ""                   # browser to borrow a login from
+    cookies_file: str = ""              # or an exported cookies.txt, which wins
     proxy: str = ""
     rate_limit: str = ""                # e.g. "2M"
     output_dir: str = str(Path.home() / "Downloads" / "Downers")
@@ -145,7 +146,9 @@ def build_argv(s: Settings, archive_file: Path | None = None) -> list[str]:
         argv += ["-I", s.items.strip()]
     if s.archive and archive_file:
         argv += ["--download-archive", str(archive_file)]
-    if s.cookies:
+    if s.cookies_file.strip():
+        argv += ["--cookies", s.cookies_file.strip()]
+    elif s.cookies:
         argv += ["--cookies-from-browser", s.cookies]
     if s.proxy.strip():
         argv += ["--proxy", s.proxy.strip()]

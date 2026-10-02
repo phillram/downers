@@ -77,3 +77,9 @@ def test_command_line_is_copyable():
     cmd = command_line(Settings(output_dir="C:/My Videos"), "https://youtu.be/x")
     assert cmd.startswith("yt-dlp ") and cmd.endswith("https://youtu.be/x")
     assert "'C:/My Videos'" in cmd
+
+
+def test_cookies_file_wins_over_browser():
+    o = opts(cookies="firefox", cookies_file="C:/cookies.txt")
+    assert o["cookiefile"] == "C:/cookies.txt"
+    assert not o.get("cookiesfrombrowser")

@@ -6,6 +6,7 @@ import ctypes
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -56,6 +57,22 @@ def dark_title_bar(window: tk.Misc) -> None:
         pass
 
 
+def on_screen(geometry: str) -> bool:
+    """Is a saved "WxH+X+Y" still on a connected monitor? Unplugging one
+    shouldn't leave the window somewhere it can't be reached."""
+    m = re.fullmatch(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geometry or "")
+    if not m:
+        return False
+    x, y = int(m[3]), int(m[4])
+    try:
+        metric = ctypes.windll.user32.GetSystemMetrics
+        left, top, width, height = (metric(i) for i in (76, 77, 78, 79))  # the virtual screen
+    except Exception:
+        return True
+    # The title bar's left end has to be grabbable
+    return left <= x + 100 < left + width and top <= y < top + height - 40
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -89,7 +106,7 @@ class App(tk.Tk):
                ("thumbnail", "metadata", "sponsorblock", "whole_playlist",
                 "compatible", "archive")},
             **{k: tk.StringVar(value=getattr(s, k)) for k in
-               ("subtitles", "items", "proxy", "rate_limit", "output_dir")},
+               ("subtitles", "items", "proxy", "rate_limit", "cookies_file", "output_dir")},
         }
         self.parallel = tk.IntVar(value=saved.get("parallel", 1))
         self.url = tk.StringVar()
@@ -113,13 +130,20 @@ class App(tk.Tk):
                       "Run: pip install imageio-ffmpeg", "warn")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        dark_title_bar(self)
-        self.deiconify()
         self._refresh_status()
-        # Size to the controls, so it fits at any display scaling
+        # Never smaller than the controls, so it fits at any display scaling
         self.update_idletasks()
         self.minsize(self.winfo_reqwidth(), self.winfo_reqheight())
-        self.after(100, self._pump)
+        self.normal_geometry = saved.get("geometry", "")
+        if on_screen(self.normal_geometry):
+            self.geometry(self.normal_geometry)
+        dark_title_bar(self)
+        self.bind("<Configure>", self._track_geometry, add=True)
+        self.deiconify()
+        if saved.get("maximized"):
+            self.update_idletasks()  # place it first, so un-maximizing returns there
+            self.state("zoomed")
+        self.pump_job = self.after(100, self._pump)
         self._schedule()
 
     # ------------------------------------------------------------------ look
@@ -282,7 +306,7 @@ class App(tk.Tk):
             cookies=BROWSER[v["cookies"].get()],
             **{k: v[k].get() for k in ("thumbnail", "metadata", "sponsorblock",
                                        "whole_playlist", "compatible", "archive",
-                                       "subtitles", "items", "proxy", "rate_limit")},
+                                       "subtitles", "items", "proxy", "rate_limit", "cookies_file")},
             output_dir=v["output_dir"].get().strip() or Settings().output_dir,
         )
 
@@ -293,9 +317,16 @@ class App(tk.Tk):
         except Exception:
             return default
 
+    def _track_geometry(self, event):
+        # Only while normal: maximized, keep the size to come back to
+        if event.widget is self and self.state() == "normal":
+            self.normal_geometry = self.geometry()
+
     def _save(self):
         try:
-            data = self.current_settings().to_dict() | {"parallel": self.parallel.get()}
+            data = self.current_settings().to_dict() | {
+                "parallel": self.parallel.get(), "geometry": self.normal_geometry,
+                "maximized": self.state() == "zoomed"}
             SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
             jobs = [j.to_dict() for j in self.jobs.values()
                     if j.status != "Done" and j.id not in self.remove_when_stopped]
@@ -380,7 +411,7 @@ class App(tk.Tk):
                         self._refresh_status()
         except queue.Empty:
             pass
-        self.after(150, self._pump)
+        self.pump_job = self.after(150, self._pump)
 
     def _refresh_status(self):
         counts: dict[str, int] = {}
@@ -529,6 +560,18 @@ class App(tk.Tk):
             self._append_log(text, level)
         self.log_text.see("end")
 
+    def _file_picker(self, parent, key):
+        frame = ttk.Frame(parent)
+        ttk.Entry(frame, textvariable=self.v[key], width=24).pack(side="left")
+
+        def browse():
+            path = filedialog.askopenfilename(
+                parent=self.options_window, filetypes=[("Cookies", "*.txt"), ("All files", "*")])
+            if path:
+                self.v[key].set(str(Path(path)))
+        ttk.Button(frame, text="Browse", command=browse).pack(side="left", padx=(4, 0))
+        return frame
+
     def _show_options(self):
         win = self._toplevel("Downers options", "", "options_window")
         if win is None:
@@ -543,6 +586,8 @@ class App(tk.Tk):
              "Which playlist/channel items, e.g. 1-20 or 1,5,8-10"),
             ("Login from", self._combo(f, "cookies", BROWSER, 22),
              "Use a browser's YouTube login (age-restricted, members, private)"),
+            ("Cookies file", self._file_picker(f, "cookies_file"),
+             "Or an exported cookies.txt; used instead of the browser"),
             ("Proxy", ttk.Entry(f, textvariable=self.v["proxy"], width=24),
              "e.g. socks5://127.0.0.1:1080 or http://host:port"),
             ("Speed limit", ttk.Entry(f, textvariable=self.v["rate_limit"], width=24),
@@ -623,6 +668,10 @@ class App(tk.Tk):
                     job.status = "Paused"
         self._save()
         self.destroy()
+
+    def destroy(self):
+        self.after_cancel(self.pump_job)
+        super().destroy()
 
 
 def main() -> int:

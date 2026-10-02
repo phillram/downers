@@ -1,120 +1,123 @@
 # Downers
 
-A small, dark window for downloading video and audio with
-[yt-dlp](https://github.com/yt-dlp/yt-dlp). Paste a link to a video, a playlist or a whole
-channel, pick the format, and it downloads. You can pause and pick up where you left off.
+Downers downloads video and audio from YouTube and anywhere else
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) supports. Paste a link to a video, a playlist or a
+whole channel, pick the format, and it goes.
 
-## Two ways to run it
+Windows only. Dark themed.
 
-### The exe (no Python needed)
+## Getting it running
 
-Run **`Downers.exe`** in this folder. It uses the two programs beside it, so keep the three
-together:
+Download `Downers.zip` from the
+[latest release](https://github.com/phillram/downers/releases/latest) and unzip it. Keep the
+three files together:
 
-| File | Purpose |
-|---|---|
-| `Downers.exe` | The app, with yt-dlp built in |
-| `ffmpeg.exe` | Merging video and audio, converting audio, embedding thumbnails |
-| `deno.exe` | Solving YouTube's JavaScript challenges, needed for full-quality formats |
+| File | What it's for |
+| --- | --- |
+| `Downers.exe` | The app |
+| `ffmpeg.exe` | Merging video with audio, converting audio, embedding thumbnails |
+| `deno.exe` | Solving YouTube's JavaScript challenges, without which the best formats are missing |
 
-To use it elsewhere, including on another Windows PC, copy those three files into one folder.
-For a desktop shortcut, right-click `Downers.exe` → **Send to** → **Desktop**.
+From source, Python 3.10 or newer:
 
-To build them, or rebuild after a code change:
-
-```bash
-pip install pyinstaller -r requirements.txt
-python tools/build_exe.py
 ```
-
-### From source
-
-Needs Python 3.10 or newer.
-
-```bash
 pip install -r requirements.txt
+python -m downers                # the window
+python tools/build_exe.py        # puts Downers.exe, ffmpeg.exe and deno.exe in this folder
 ```
-
-That installs yt-dlp, plus copies of ffmpeg and Deno, so nothing has to be installed
-system-wide. If `ffmpeg` or `deno` is already on your `PATH`, that copy is used instead.
-
-Double-click **`Downers.pyw`**, or run `python -m downers`. `Downers.pyw` uses the Python named
-on its first line (`C:\Coding\.venv\Scripts\pythonw.exe`); edit that line if yours is
-elsewhere.
 
 ## Using it
 
-1. Paste a link into the box and press **Enter** or **Add**. **Paste** adds whatever links are
-   on the clipboard; several at once is fine.
-2. Choose **Video** or **Audio only** *before* adding. Each link keeps the settings it was
-   added with, so you can queue a 1080p video and an MP3 side by side.
-3. Downloads start straight away, one at a time (change this in **Options**).
+Paste a link and press Enter. **Paste** adds every link on the clipboard. Each link keeps the
+settings it was added with, so a 1080p video and an MP3 can sit in the same queue.
 
 | Setting | Choices | Default |
-|---|---|---|
-| Video quality | Best, 2160p, 1440p, 1080p, 720p, 480p, 360p (the best up to that height) | Best |
+| --- | --- | --- |
+| Video | Best, 2160p, 1440p, 1080p, 720p, 480p, 360p. The best up to that height | Best |
 | Video file | MP4, MKV | MP4 |
-| Audio format | Original (YouTube's own stream, no re-encoding), MP3, M4A, Opus, FLAC, WAV | Original |
+| Audio only | Original (YouTube's own stream, not re-encoded), MP3, M4A, Opus, FLAC, WAV | Original |
 | Audio quality | Best, 320k, 256k, 192k, 128k, 96k | Best |
-| Embed thumbnail | Cover art inside the file (video and audio; not WAV) | On |
-| Tags & chapters | Title, uploader, date and description tags, plus chapter markers | On |
-| Cut sponsors | Removes sponsor, self-promo and "like and subscribe" segments ([SponsorBlock](https://sponsor.ajay.app)) | Off |
-| Full playlist from video links | A link like `watch?v=…&list=…` downloads the whole playlist, not just that video | Off |
-| Save to | Any folder | `Downloads\Downers` |
+| Embed thumbnail | Cover art inside the file. Not WAV | On |
+| Tags & chapters | Title, uploader, date and chapter markers | On |
+| Cut sponsors | Removes sponsor, self-promotion and "like and subscribe" segments, via [SponsorBlock](https://sponsor.ajay.app) | Off |
+| Full playlist from video links | A `watch?v=…&list=…` link gets the whole playlist, not just that video | Off |
 
-In video mode, audio quality caps the soundtrack's bitrate. In audio mode it sets the
-encoding bitrate. FLAC and WAV are lossless, so they have no quality setting.
+Files go to `Downloads\Downers` unless you choose another folder. A playlist gets its own
+folder with numbered files. A channel gets a folder per tab, such as `Name - Videos` and
+`Name - Shorts`; link to `youtube.com/@name/videos` for the videos alone.
 
-### Playlists and channels
+**Pause** and **Resume** act on the selected rows, or on everything if none are selected. A
+paused download keeps its partial file and continues from the same byte. Finished playlist
+items are skipped. Closing Downers mid-download pauses it, and the queue is back next time.
 
-Playlist and channel links are saved into a folder named after the playlist, with each file
-numbered:
-
-```
-Downloads\Downers\
-  Some Video.mp4
-  My Playlist\
-    01 - First Song.mp3
-    02 - Second Song.mp3
-```
-
-A channel link (`youtube.com/@name`) gets a folder for each tab it has, such as
-`Name - Videos` and `Name - Shorts`. Use `youtube.com/@name/videos` to get just the videos.
-Use that form with **Items** too: on a bare `@name` link, Items counts tabs, not videos.
-
-### Pause and resume
-
-- **Pause** and **Resume** act on the selected rows, or on everything if nothing is selected.
-- A paused download keeps its partial file and carries on from the same point.
-- In a playlist, finished items are skipped when you resume.
-- Closing Downers mid-download asks first, then pauses everything. The queue comes back the
-  next time you open it.
-
-Right-click a row for more: **Open folder**, **Copy link**, and **Copy yt-dlp command** (the
-equivalent command line, for running by hand). Double-click a row to open its folder. **Delete**
-removes it from the queue (files already downloaded are kept).
+Right-click a row to open its folder, copy its link, or copy the equivalent yt-dlp command.
+Double-click opens the folder. Delete removes the row; downloaded files stay.
 
 ### Options
 
 | Option | What it does |
-|---|---|
-| Subtitles | Language codes to embed in videos, e.g. `en` or `en,es` |
-| Items | Only some of a playlist or channel, e.g. `1-20` or `1,5,8-10` |
-| Login from | Borrow a browser's YouTube login for age-restricted, members-only or private videos. Close that browser first. Firefox works best; Chrome and Edge often lock their cookies on Windows. |
-| Proxy | Send traffic through a proxy, e.g. `socks5://127.0.0.1:1080` or `http://host:port` |
-| Speed limit | e.g. `2M` for 2 MB/s |
-| At once | How many links download at the same time (1–4) |
-| Prefer H.264/AAC | Picks formats that old TVs, phones and editors can play. YouTube usually only offers H.264 up to 1080p. |
-| Remember finished videos | Records what's been downloaded and skips it next time. Handy for re-running a channel to fetch only new uploads. |
-| Update yt-dlp | YouTube changes often. If downloads start failing, press this; it fetches the latest yt-dlp (through your proxy, if one is set) and offers to restart. Works in the exe too, with no rebuild needed. |
+| --- | --- |
+| Subtitles | Languages to embed in videos, such as `en` or `en,es` |
+| Items | Part of a playlist or channel, such as `1-20` or `1,5,8-10` |
+| Login from | Use a browser's YouTube login. Close that browser first |
+| Cookies file | Use an exported `cookies.txt` instead |
+| Proxy | Such as `socks5://127.0.0.1:1080` or `http://host:port` |
+| Speed limit | Such as `2M` for 2 MB/s |
+| At once | How many links download at the same time, 1 to 4 |
+| Prefer H.264/AAC | For old TVs, phones and editors. YouTube rarely offers H.264 above 1080p |
+| Remember finished videos | Skip anything downloaded before. Rerun a channel to fetch only new uploads |
+| Update yt-dlp | Fetch the latest yt-dlp and restart |
 
-Changes apply to links added afterward.
+Options apply to links added after the change. **Log** shows yt-dlp's output, including why
+anything failed.
 
-**Log** shows yt-dlp's full output, including the reason for any failure.
+## Do I need a YouTube login?
+
+Not for public videos. A login is needed for age-restricted, members-only and private videos,
+and when YouTube answers with "Sign in to confirm you're not a bot". That happens most on VPNs
+and shared connections.
+
+For a login, pick your browser under **Login from**. Firefox works best. Chrome and Edge lock
+their cookies on Windows, so for those, export a `cookies.txt` with a browser extension and
+choose it under **Cookies file**. A cookies file is your logged-in session: keep it private.
+
+## When downloads stop working
+
+YouTube changes something every few weeks and yt-dlp catches up within days. Press
+**Options → Update yt-dlp**. Downers fetches the new version from PyPI, through your proxy if
+one is set, and offers to restart. It works the same in the exe; no rebuild needed.
 
 ## Where things are kept
 
-Settings, the saved queue and the "remember finished videos" list live in
-`%APPDATA%\Downers\`. So does any newer yt-dlp fetched by **Update yt-dlp**, in a `yt-dlp`
-folder. It's used only while it's newer than the built-in one, and deleting the folder goes
-back to the built-in one.
+Everything Downers remembers lives in `%APPDATA%\Downers`: settings, window size and position,
+the queue, the list of finished videos, and any yt-dlp fetched by Update. The updated yt-dlp is
+only used while it's newer than the built-in one. Delete its `yt-dlp` folder to go back.
+
+## Development
+
+```
+pip install pytest
+python -m pytest
+```
+
+The window tests open real windows, so they need a desktop session.
+
+```
+downers/
+├── downers/
+│   ├── __main__.py     entry point
+│   ├── app.py          the tkinter window
+│   ├── engine.py       settings to yt-dlp options, and running one download
+│   ├── updater.py      fetching a newer yt-dlp and loading it ahead of the bundled one
+│   └── paths.py        where files live, from source or from the exe
+├── tests/
+├── tools/
+│   ├── build_exe.py    builds Downers.exe and copies ffmpeg and Deno beside it
+│   └── make_icon.py    redraws assets/downers.ico
+└── assets/
+```
+
+`engine.py` has no tkinter in it. Settings become a yt-dlp command line, which yt-dlp's own
+parser turns into options, so post-processing is wired exactly as yt-dlp intends.
+
+Pushing a `v*` tag builds the exe on GitHub Actions and publishes `Downers.zip` as a release.
