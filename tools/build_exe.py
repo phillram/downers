@@ -2,7 +2,8 @@
 
     python tools/build_exe.py
 
-Produces dist/Downers/, a folder that runs on any Windows PC without Python:
+Puts three files straight into the project folder. They run on any Windows PC
+without Python, as long as they stay together:
 
     Downers.exe    the app (yt-dlp is inside it)
     ffmpeg.exe     merging, converting, embedding thumbnails
@@ -10,12 +11,13 @@ Produces dist/Downers/, a folder that runs on any Windows PC without Python:
 
 The two helpers stay beside the exe rather than inside it: packed in, all
 ~185 MB would be unpacked to a temp folder on every launch. Run this again
-after changing any of the code.
+after changing any of the code. All three are gitignored.
 """
 
 from __future__ import annotations
 
 import filecmp
+import os
 import shutil
 import subprocess
 import sys
@@ -23,7 +25,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent  # tools/ -> project root
-OUT_DIR = ROOT / "dist" / "Downers"
+OUT_DIR = ROOT
 EXE_PATH = OUT_DIR / "Downers.exe"
 WORK_DIR = ROOT / "build"
 ICON = ROOT / "assets" / "downers.ico"
@@ -60,11 +62,14 @@ def main() -> int:
         print(f"    {sys.executable} -m pip install pyinstaller -r requirements.txt")
         return 1
 
-    # PyInstaller quietly leaves out a module that doesn't compile
-    import compileall
-    if not compileall.compile_dir(ROOT / "downers", quiet=1):
-        print("The code has a syntax error (above); fix it first.")
-        return 1
+    # PyInstaller quietly leaves out a module that doesn't compile.
+    # compile() checks without writing __pycache__ folders.
+    for source in (ROOT / "downers").glob("*.py"):
+        try:
+            compile(source.read_text(encoding="utf-8"), str(source), "exec")
+        except SyntaxError as e:
+            print(f"Syntax error, fix it first: {e}")
+            return 1
 
     if _is_running():
         print("Downers.exe is running, so it can't be replaced. Close it and run this again.")
@@ -87,9 +92,13 @@ def main() -> int:
 
     print("Building Downers.exe. This takes a minute.\n")
     started = time.time()
-    if subprocess.run(command, cwd=ROOT).returncode != 0:
+    # No __pycache__ folders left in the project by the analysis
+    env = os.environ | {"PYTHONDONTWRITEBYTECODE": "1"}
+    if subprocess.run(command, cwd=ROOT, env=env).returncode != 0:
         print("\nBuild failed: see the PyInstaller output above.")
         return 1
+
+    shutil.rmtree(WORK_DIR, ignore_errors=True)  # PyInstaller's scratch; keep the folder flat
 
     for name, source in helpers.items():
         target = OUT_DIR / name
@@ -97,8 +106,7 @@ def main() -> int:
             print(f"Copying {name}")
             shutil.copy2(source, target)
 
-    size = sum(f.stat().st_size for f in OUT_DIR.iterdir()) / 1e6
-    print(f"\nBuilt {OUT_DIR} ({size:.0f} MB, exe {EXE_PATH.stat().st_size / 1e6:.0f} MB) "
+    print(f"\nBuilt {EXE_PATH} ({EXE_PATH.stat().st_size / 1e6:.0f} MB) "
           f"in {time.time() - started:.0f}s.")
     return 0
 

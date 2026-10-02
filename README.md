@@ -8,8 +8,8 @@ channel, pick the format, and it downloads. You can pause and pick up where you 
 
 ### The exe (no Python needed)
 
-Run **`dist\Downers\Downers.exe`**. Keep the whole `Downers` folder together, because the exe
-uses the two programs beside it:
+Run **`Downers.exe`** in this folder. It uses the two programs beside it, so keep the three
+together:
 
 | File | Purpose |
 |---|---|
@@ -17,10 +17,10 @@ uses the two programs beside it:
 | `ffmpeg.exe` | Merging video and audio, converting audio, embedding thumbnails |
 | `deno.exe` | Solving YouTube's JavaScript challenges, needed for full-quality formats |
 
-You can move or copy the folder anywhere, including to another Windows PC. For a desktop
-shortcut, right-click `Downers.exe` → **Send to** → **Desktop**.
+To use it elsewhere, including on another Windows PC, copy those three files into one folder.
+For a desktop shortcut, right-click `Downers.exe` → **Send to** → **Desktop**.
 
-To build or rebuild the folder after a code change:
+To build them, or rebuild after a code change:
 
 ```bash
 pip install pyinstaller -r requirements.txt
