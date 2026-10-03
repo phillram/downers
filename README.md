@@ -49,8 +49,8 @@ Files go to `Downloads\Downers` unless you choose another folder. A playlist get
 folder with numbered files. A channel gets a folder per tab, such as `Name - Videos` and
 `Name - Shorts`; link to `youtube.com/@name/videos` for the videos alone.
 
-**Pause** and **Resume** act on the selected rows, or on everything if none are selected.
-Resume also retries failed links. A paused download keeps its partial file and continues from
+**Pause** and **Resume** act on the selected rows; **Pause all** and **Resume all** on the
+whole queue. Resuming also retries failed links. A paused download keeps its partial file and continues from
 the same byte. Finished playlist items are skipped. Closing Downers mid-download pauses it,
 and the queue is back next time. Only one Downers runs at a time; opening it again brings the
 open one forward.

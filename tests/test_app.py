@@ -80,7 +80,7 @@ def test_resume_everything_leaves_finished_links_alone(app):
     app._add_from_text("https://youtu.be/a https://youtu.be/b")
     done, paused = app.jobs.values()
     done.status, paused.status = "Done", "Paused"
-    app._for_selected(app._resume, all_if_none=True)
+    app._for_all(app._resume)
     assert (done.status, paused.status) == ("Done", "Queued")
 
 
@@ -122,3 +122,21 @@ def test_a_flood_of_updates_stays_small(app):
     assert len(app.pending) == 1 and len(app.pending_log) == A.LOG_LIMIT
     app._pump()
     assert job.progress == "99999%" and not app.pending
+
+
+def test_pause_all_and_resume_all(app):
+    app._add_from_text("https://youtu.be/a https://youtu.be/b")
+    a, b = app.jobs.values()
+    app._for_all(app._pause)
+    assert (a.status, b.status) == ("Paused", "Paused")
+    app._for_all(app._resume)
+    assert (a.status, b.status) == ("Queued", "Queued")
+
+
+def test_pause_with_nothing_selected_does_nothing(app):
+    app._add_from_text("https://youtu.be/a")
+    job = next(iter(app.jobs.values()))
+    app.tree.selection_set(())
+    app._for_selected(app._pause)
+    assert job.status == "Queued"
+    assert app.status.get() == "Select a row first"

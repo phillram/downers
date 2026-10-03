@@ -250,12 +250,15 @@ class App(tk.Tk):
         # Toolbar: every button that isn't tied to a field, in one strip at the top
         bar = ttk.Frame(self, style="Bar.TFrame", padding=(10, 6))
         bar.pack(fill="x")
-        # Pause and Resume act on the selection, or on everything if nothing is selected
-        for text, cmd in (("Pause", lambda: self._for_selected(self._pause, all_if_none=True)),
-                          ("Resume", lambda: self._for_selected(self._resume, all_if_none=True)),
-                          ("Remove", self._remove_selected),
-                          ("Clear done", self._clear_done)):
-            ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(0, 4))
+        # Pause and Resume act on the selected rows; the "all" pair on everything
+        for text, cmd, gap in (
+                ("Pause", lambda: self._for_selected(self._pause), 4),
+                ("Resume", lambda: self._for_selected(self._resume), 4),
+                ("Pause all", lambda: self._for_all(self._pause), 4),
+                ("Resume all", lambda: self._for_all(self._resume), 12),
+                ("Remove", self._remove_selected, 4),
+                ("Clear done", self._clear_done, 4)):
+            ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(0, gap))
         ttk.Button(bar, text="Log", command=self._show_log).pack(side="right")
         ttk.Button(bar, text="Options", command=self._show_options).pack(side="right", padx=4)
         ttk.Label(bar, textvariable=self.status, style="Bar.TLabel").pack(side="right", padx=8)
@@ -504,8 +507,16 @@ class App(tk.Tk):
 
     # ---------------------------------------------------------- job actions
 
-    def _for_selected(self, fn, all_if_none=False):
-        ids = self.tree.selection() or (self.tree.get_children() if all_if_none else ())
+    def _for_selected(self, fn):
+        if not self.tree.selection():
+            self.status.set("Select a row first")
+            return
+        self._apply(fn, self.tree.selection())
+
+    def _for_all(self, fn):
+        self._apply(fn, self.tree.get_children())
+
+    def _apply(self, fn, ids):
         for iid in ids:
             if (job := self.jobs.get(int(iid))) is not None:
                 fn(job)
