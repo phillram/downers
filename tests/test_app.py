@@ -1,8 +1,22 @@
-"""The window remembers where it was. Needs a desktop session."""
+"""The window: layout, queue handling, remembering. Needs a desktop session."""
+
+import tkinter
 
 import pytest
 
 from downers import app as A
+
+
+def new_app():
+    """A.App(), retried if Tk fails to start. Making and destroying many Tk windows
+    in one process occasionally fails to read Tk's own files ("Can't find a usable
+    tk.tcl"); Downers makes one window, so only the tests meet this."""
+    for attempt in range(3):
+        try:
+            return A.App()
+        except tkinter.TclError as e:
+            if "usable tk.tcl" not in str(e) or attempt == 2:
+                raise
 
 
 @pytest.fixture
@@ -22,12 +36,12 @@ def test_on_screen():
 
 
 def test_window_size_and_position_are_restored(data_dir):
-    w = A.App()
+    w = new_app()
     w.geometry("1000x600+150+120")
     w.update()
     w._on_close()
 
-    w = A.App()
+    w = new_app()
     w.update()
     try:
         assert w.geometry() == "1000x600+150+120"
@@ -36,14 +50,14 @@ def test_window_size_and_position_are_restored(data_dir):
 
 
 def test_maximized_comes_back_maximized_with_the_old_size_behind_it(data_dir):
-    w = A.App()
+    w = new_app()
     w.geometry("900x550+200+150")
     w.update()
     w.state("zoomed")
     w.update()
     w._on_close()
 
-    w = A.App()
+    w = new_app()
     w.update()
     try:
         assert w.state() == "zoomed"
@@ -56,7 +70,7 @@ def test_maximized_comes_back_maximized_with_the_old_size_behind_it(data_dir):
 
 @pytest.fixture
 def app(data_dir, monkeypatch):
-    w = A.App()
+    w = new_app()
     monkeypatch.setattr(w, "_schedule", lambda: None)  # queue only, no downloads
     yield w
     w.destroy()
@@ -96,9 +110,13 @@ def test_popups_open_centered_over_the_window(app, show, attr):
     pop.update()
     main_cx = app.winfo_rootx() + app.winfo_width() // 2
     pop_cx = pop.winfo_rootx() + pop.winfo_width() // 2
-    main_cy = app.winfo_rooty() + app.winfo_height() // 2
-    pop_cy = pop.winfo_rooty() + pop.winfo_height() // 2
-    assert abs(main_cx - pop_cx) < 20 and abs(main_cy - pop_cy) < 40
+    assert abs(main_cx - pop_cx) < 20
+    # Centered top to bottom too, unless that would run off a small screen, in which
+    # case it's moved up just enough to fit
+    h = pop.winfo_height()
+    wanted_top = app.winfo_rooty() + app.winfo_height() // 2 - h // 2
+    fitted_top = max(0, min(wanted_top, pop.winfo_vrootheight() - h - 40))
+    assert abs(pop.winfo_rooty() - fitted_top) < 40
 
 
 def test_log_is_capped_in_memory_and_in_the_open_window(app):
@@ -147,7 +165,7 @@ def test_login_and_proxy_set_later_apply_on_resume(data_dir, monkeypatch):
     so fixing a "sign in" error in Options works on Resume."""
     started = []
     monkeypatch.setattr(A.engine, "run", lambda job, *a: started.append(job.settings))
-    w = A.App()
+    w = new_app()
     try:
         w._add_from_text("https://youtu.be/a")
         job = next(iter(w.jobs.values()))
@@ -201,7 +219,7 @@ def fake_runs(data_dir, monkeypatch):
         job.errors, job.last_error = (1, error) if error else (0, "")
         emit(job, status=status)
     monkeypatch.setattr(A.engine, "run", run)
-    w = A.App()
+    w = new_app()
     yield w, runs, outcomes
     w.destroy()
 
@@ -262,7 +280,7 @@ def test_closing_mid_download_carries_on_next_time(data_dir, monkeypatch):
     release = threading.Event()
     monkeypatch.setattr(A.engine, "run", lambda job, emit, archive=None: (
         emit(job, status="Downloading"), release.wait(0.2)))
-    w = A.App()
+    w = new_app()
     w._add_from_text("https://youtu.be/a")
     w._pump()
     # Closing with downloads running asks first; say yes
