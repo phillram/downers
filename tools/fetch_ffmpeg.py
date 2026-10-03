@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import urllib.request
@@ -29,7 +30,11 @@ RELEASE = "https://api.github.com/repos/GyanD/codexffmpeg/releases/latest"
 
 
 def fetch(url: str, dest: Path | None = None) -> bytes | None:
-    request = urllib.request.Request(url, headers={"User-Agent": "Downers build"})
+    headers = {"User-Agent": "Downers build"}
+    # On GitHub Actions, anonymous API calls share a tight rate limit; use the token
+    if (token := os.environ.get("GITHUB_TOKEN")) and url.startswith("https://api.github.com/"):
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=60) as response:
         if dest is None:
             return response.read()
