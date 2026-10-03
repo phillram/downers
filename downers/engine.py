@@ -50,23 +50,31 @@ STEPS = {"Merger": "Merging video and sound", "ExtractAudio": "Converting audio"
          "SponsorBlock": "Finding sponsors", "ModifyChapters": "Cutting sponsors",
          "EmbedSubtitle": "Adding subtitles", "MoveFiles": "Finishing"}
 
-# Recognizable failures, and what to do about them
+# Recognizable failures: what to tell the user, and whether trying again could help
 HINTS = (
-    ("not a bot", "YouTube wants a login: set Login from in Options, then Resume"),
-    ("confirm your age", "Age-restricted: set Login from in Options, then Resume"),
-    ("members-only", "Members only: set Login from in Options, then Resume"),
-    ("private video", "Private video: needs a login that can see it"),
-    ("video unavailable", "This video isn't available"),
-    ("not available in your country", "Blocked in your country: try a Proxy in Options"),
-    ("unable to download webpage", "Couldn't reach the site: check the connection or Proxy"),
-    ("unsupported url", "Downers can't download from this link"),
-    ("http error 403", "The site refused the download: try Update yt-dlp in Options"),
+    ("not a bot", "YouTube wants a login: set Login from in Options, then Resume", False),
+    ("confirm your age", "Age-restricted: set Login from in Options, then Resume", False),
+    ("members-only", "Members only: set Login from in Options, then Resume", False),
+    ("private video", "Private video: needs a login that can see it", False),
+    ("video unavailable", "This video isn't available", False),
+    ("not available in your country", "Blocked in your country: try a Proxy in Options", False),
+    ("unable to download webpage", "Couldn't reach the site: check the connection or Proxy",
+     True),
+    ("unsupported url", "Downers can't download from this link", False),
+    ("http error 403", "The site refused the download: try Update yt-dlp in Options", True),
 )
 
 
 def hint(message: str) -> str | None:
     lowered = message.lower()
-    return next((h for needle, h in HINTS if needle in lowered), None)
+    return next((text for needle, text, _ in HINTS if needle in lowered), None)
+
+
+def retryable(message: str) -> bool:
+    """Could trying again help? Not for a login wall or a video that's gone; yes for
+    anything unrecognized, which is usually the connection."""
+    lowered = message.lower()
+    return next((retry for needle, _, retry in HINTS if needle in lowered), True)
 
 
 @dataclass
@@ -140,10 +148,14 @@ def deno_path() -> str | None:
         return None
 
 
-def build_argv(s: Settings, archive_file: Path | None = None) -> list[str]:
-    """The yt-dlp command line (without the URL) for these settings."""
+def build_argv(s: Settings, archive_file: Path | None = None,
+               fresh: bool = False) -> list[str]:
+    """The yt-dlp command line (without the URL) for these settings. fresh downloads
+    everything again, replacing files already there."""
     argv = ["--ignore-config", "--ignore-errors", "--no-write-playlist-metafiles",
             "--concurrent-fragments", "4", "-P", s.output_dir, "-o", SINGLE_TEMPLATE]
+    if fresh:
+        argv.append("--force-overwrites")
 
     if ffmpeg := ffmpeg_path():
         # The folder, so yt-dlp finds ffprobe beside ffmpeg
@@ -217,6 +229,9 @@ class Job:
     errors: int = 0
     folder: str = ""            # where its files are going, once known
     last_error: str = ""
+    retries: int = 0            # automatic retries used since it last succeeded
+    retry_at: float = 0.0       # when a "Waiting" job goes back in the queue
+    fresh: bool = False         # "Download again": replace what's already there
     id: int = field(default_factory=lambda: next(_ids))
     stop: threading.Event = field(default_factory=threading.Event, repr=False)
     key: str = field(default_factory=lambda: uuid.uuid4().hex)  # names its resume file
@@ -236,7 +251,9 @@ class Job:
     @classmethod
     def from_dict(cls, data: dict) -> "Job":
         status = data.get("status", "Queued")
-        if status not in ("Done", "Error", "Paused", "Queued"):
+        if status == "Waiting":
+            status = "Queued"   # was waiting to retry: retry now
+        elif status not in ("Done", "Error", "Paused", "Queued"):
             status = "Paused"   # was running when the app closed
         return cls(url=data["url"], title=data.get("title", ""), status=status,
                    settings=Settings.from_dict(data.get("settings", {})),
@@ -310,7 +327,7 @@ def run(job: Job, emit: Callable, archive_file: Path | None = None) -> None:
     """
     s = job.settings
     Path(s.output_dir).mkdir(parents=True, exist_ok=True)
-    opts = yt_dlp.parse_options(build_argv(s, archive_file)).ydl_opts
+    opts = yt_dlp.parse_options(build_argv(s, archive_file, job.fresh)).ydl_opts
     job.errors = 0
 
     def item_label(info: dict) -> str:

@@ -188,3 +188,106 @@ def test_ctrl_v_outside_a_text_box_adds_the_clipboard(app):
     app.event_generate("<Control-v>", when="now")
     app._ctrl_v(type("E", (), {"widget": app.tree})())
     assert len(app.jobs) == 2
+
+
+@pytest.fixture
+def fake_runs(data_dir, monkeypatch):
+    """Downloads that end however the test says, recording what each was asked."""
+    runs, outcomes = [], []
+
+    def run(job, emit, archive=None):
+        runs.append({"fresh": job.fresh, "archive": archive})
+        status, error = outcomes.pop(0) if outcomes else ("Done", "")
+        job.errors, job.last_error = (1, error) if error else (0, "")
+        emit(job, status=status)
+    monkeypatch.setattr(A.engine, "run", run)
+    w = A.App()
+    yield w, runs, outcomes
+    w.destroy()
+
+
+def finish(w):
+    for t in list(w.threads.values()):
+        t.join(5)
+    w._pump()
+
+
+def test_a_dropped_connection_is_retried_then_gives_up(fake_runs):
+    w, runs, outcomes = fake_runs
+    outcomes += [("Error", "Unable to download webpage")] * 3
+    w._add_from_text("https://youtu.be/a")
+    job = next(iter(w.jobs.values()))
+    for attempt in range(A.RETRIES):
+        finish(w)
+        assert job.status == "Waiting" and "Retrying in" in job.progress
+        job.retry_at = 0          # don't wait the minute
+        w._pump()
+    finish(w)
+    assert job.status == "Error" and len(runs) == A.RETRIES + 1
+
+
+def test_a_login_wall_is_not_retried(fake_runs):
+    w, runs, outcomes = fake_runs
+    outcomes.append(("Error", "Sign in to confirm you're not a bot"))
+    w._add_from_text("https://youtu.be/a")
+    finish(w)
+    assert next(iter(w.jobs.values())).status == "Error" and len(runs) == 1
+
+
+def test_auto_retry_can_be_turned_off(fake_runs):
+    w, runs, outcomes = fake_runs
+    w.auto_retry.set(False)
+    outcomes.append(("Error", "Unable to download webpage"))
+    w._add_from_text("https://youtu.be/a")
+    finish(w)
+    assert next(iter(w.jobs.values())).status == "Error"
+
+
+def test_download_again_runs_fresh_and_ignores_the_remembered_list(fake_runs):
+    w, runs, _ = fake_runs
+    w.v["archive"].set(True)
+    w._add_from_text("https://youtu.be/a")
+    finish(w)
+    job = next(iter(w.jobs.values()))
+    w.tree.selection_set(str(job.id))
+    w._for_selected(w._again)
+    finish(w)
+    assert runs[0] == {"fresh": False, "archive": A.ARCHIVE_FILE}
+    assert runs[1]["fresh"] is True and runs[1]["archive"] != A.ARCHIVE_FILE
+    assert job.status == "Done" and not job.fresh
+
+
+def test_closing_mid_download_carries_on_next_time(data_dir, monkeypatch):
+    import threading
+    release = threading.Event()
+    monkeypatch.setattr(A.engine, "run", lambda job, emit, archive=None: (
+        emit(job, status="Downloading"), release.wait(0.2)))
+    w = A.App()
+    w._add_from_text("https://youtu.be/a")
+    w._pump()
+    # Closing with downloads running asks first; say yes
+    monkeypatch.setattr(A.messagebox, "askyesno", lambda *a, **k: True)
+    w._on_close()
+    saved = A.json.loads(A.QUEUE_FILE.read_text())
+    assert [j["status"] for j in saved] == ["Queued"]
+
+
+def test_weekly_update_check_offers_a_newer_yt_dlp(fake_runs, monkeypatch):
+    w, _, _ = fake_runs
+    asked = []
+    monkeypatch.setattr(A.updater, "latest_version", lambda proxy="": "2999.1.1")
+    monkeypatch.setattr(A.messagebox, "askyesno", lambda *a, **k: asked.append(a) or False)
+    w.last_update_check = 0
+    w._maybe_check_for_update()
+    for _ in range(50):
+        w._pump()
+        if asked:
+            break
+        A.time.sleep(0.05)
+    assert asked and "2999.1.1" in asked[0][1]
+    assert w.last_update_check > 0
+    asked.clear()
+    w._maybe_check_for_update()  # within the week: no network, no question
+    A.time.sleep(0.2)
+    w._pump()
+    assert not asked

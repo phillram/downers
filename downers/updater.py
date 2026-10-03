@@ -83,6 +83,18 @@ def _wheel(ydl, release: dict) -> zipfile.ZipFile:
     return zipfile.ZipFile(io.BytesIO(ydl.urlopen(url).read()))
 
 
+def latest_version(proxy: str = "") -> str:
+    """The newest yt-dlp on PyPI."""
+    import yt_dlp
+
+    with yt_dlp.YoutubeDL({"quiet": True, "proxy": proxy or None}) as ydl:
+        return _pypi(ydl, "yt-dlp")["info"]["version"]
+
+
+def is_newer(version: str, than: str) -> bool:
+    return _key(version) > _key(than)
+
+
 def update(current: str, proxy: str = "") -> tuple[bool, str]:
     """Fetch the latest yt-dlp if `current` is older.
 

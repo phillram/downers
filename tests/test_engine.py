@@ -2,7 +2,8 @@
 
 import yt_dlp
 
-from downers.engine import Job, Settings, build_argv, command_line, describe, hint
+from downers.engine import (Job, Settings, build_argv, command_line, describe, hint,
+                            retryable)
 
 
 def opts(**kw):
@@ -112,3 +113,15 @@ def test_discard_partials_deletes_only_unfinished_files(tmp_path):
 def test_partials_survive_a_restart():
     job = Job("https://x", Settings(), partials={"C:/a.mp4.part"})
     assert Job.from_dict(job.to_dict()).partials == {"C:/a.mp4.part"}
+
+
+def test_download_again_replaces_files():
+    assert "--force-overwrites" in build_argv(Settings(), fresh=True)
+    assert "--force-overwrites" not in build_argv(Settings())
+
+
+def test_only_failures_a_retry_could_fix_are_retried():
+    assert retryable("ERROR: [youtube] abc: Unable to download webpage: timed out")
+    assert retryable("ERROR: something new and strange")
+    assert not retryable("ERROR: Sign in to confirm you're not a bot")
+    assert not retryable("ERROR: [youtube] abc: Video unavailable")

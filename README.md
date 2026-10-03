@@ -53,6 +53,7 @@ The toolbar works on the list:
 | --- | --- |
 | Pause, Pause all | Stop the selected downloads, or all of them. What's downloaded so far is kept |
 | Resume, Resume all | Carry on from the same byte, skipping finished playlist items. Failed links are retried |
+| Download again | Download the selected finished rows from scratch, replacing the files |
 | Remove | Take the selected rows off the list (or press Delete). Finished files stay; for an unfinished download it asks, then deletes the partial files |
 | Clear done | Take finished rows off the list. The files stay |
 
@@ -60,8 +61,9 @@ When something fails, its row says why and what to try, such as "YouTube wants a
 Login from in Options, then Resume". **Log** has yt-dlp's full output.
 
 Right-click a row to open its folder, copy its link, or copy the equivalent yt-dlp command.
-Double-click opens the folder. Closing Downers mid-download pauses it, and the list is back
-next time. Only one Downers runs at a time; opening it again brings the open one forward.
+Double-click opens the folder. Closing Downers mid-download stops it, and it carries on from
+the same point next time you open Downers. Only one Downers runs at a time; opening it again
+brings the open one forward.
 
 ### Options
 
@@ -73,10 +75,12 @@ next time. Only one Downers runs at a time; opening it again brings the open one
 | Items | Part of a playlist or channel, such as `1-20` or `1,5,8-10`. Only for the next link added |
 | Prefer H.264 video | For old TVs, phones and editors. YouTube rarely offers H.264 above 1080p |
 | Remember finished videos | Skip anything downloaded before. Rerun a channel to fetch only new uploads |
+| Retry failed downloads | On by default. A failed download tries twice more, a minute apart. Not for failures a retry can't fix, such as a login wall or a removed video |
 | Login from | Use a browser's YouTube login. Close that browser first |
 | Cookies file | Use an exported `cookies.txt` instead |
 | Proxy | Such as `socks5://127.0.0.1:1080` or `http://host:port` |
-| Update yt-dlp | Fetch the latest yt-dlp and restart |
+| Update yt-dlp | Fetch the latest yt-dlp and restart. Downloads in progress carry on after |
+| Check for a new yt-dlp once a week | On by default. Asks before updating |
 
 Login, proxy and speed limit apply to every download as it starts, including ones already in
 the list. The rest apply to links added after the change.
@@ -93,9 +97,10 @@ choose it under **Cookies file**. A cookies file is your logged-in session: keep
 
 ## When downloads stop working
 
-YouTube changes something every few weeks and yt-dlp catches up within days. Press
-**Options → Update yt-dlp**. Downers fetches the new version from PyPI, through your proxy if
-one is set, and offers to restart. It works the same in the exe; no rebuild needed.
+YouTube changes something every few weeks and yt-dlp catches up within days. Downers checks
+for a new yt-dlp once a week and asks before updating; **Options → Update yt-dlp** does it on
+demand. The new version comes from PyPI, through your proxy if one is set, and works the same
+in the exe, with no rebuild needed.
 
 ## Where things are kept
 

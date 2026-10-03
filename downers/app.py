@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from collections import deque
 from dataclasses import replace
@@ -44,6 +45,10 @@ BROWSER = {"None": "", "Firefox": "firefox", "Chrome": "chrome", "Edge": "edge",
 # Options that describe the connection rather than the download. These apply to every
 # download as it starts, so a login set after "sign in" errors works on Resume.
 LIVE = ("cookies", "cookies_file", "proxy", "rate_limit")
+
+RETRIES = 2                 # automatic retries after the first try
+RETRY_DELAY = 60            # seconds to wait before each
+UPDATE_CHECK_EVERY = 7 * 24 * 3600
 
 
 class Tooltip:
@@ -158,6 +163,7 @@ class App(tk.Tk):
         self.lock = threading.Lock()
         self.pending: dict[int, dict] = {}
         self.pending_log: deque[tuple[int, str, str]] = deque(maxlen=LOG_LIMIT)
+        self.pending_calls: deque = deque()  # results from other threads, run in _pump
         self.jobs: dict[int, Job] = {}
         self.threads: dict[int, threading.Thread] = {}
         self.remove_when_stopped: set[int] = set()
@@ -181,6 +187,9 @@ class App(tk.Tk):
                ("subtitles", "items", "proxy", "rate_limit", "cookies_file", "output_dir")},
         }
         self.parallel = tk.IntVar(value=saved.get("parallel", 1))
+        self.auto_retry = tk.BooleanVar(value=saved.get("auto_retry", True))
+        self.check_updates = tk.BooleanVar(value=saved.get("check_updates", True))
+        self.last_update_check = saved.get("last_update_check", 0)
         self.url = tk.StringVar()
         self.status = tk.StringVar()
 
@@ -230,6 +239,7 @@ class App(tk.Tk):
             self.state("zoomed")
         self.pump_job = self.after(100, self._pump)
         self._schedule()
+        self.after(15000, self._maybe_check_for_update)
         if FROZEN:
             # Later, so a copy that's just restarted us has finished exiting
             self.after(30000, lambda: threading.Thread(target=clean_stale_unpacks,
@@ -305,7 +315,9 @@ class App(tk.Tk):
             (("Resume", lambda: self._for_selected(self._resume),
               "Carry on with the selected downloads, or retry them if they failed."),
              ("Resume all", lambda: self._for_all(self._resume),
-              "Carry on with everything paused, and retry everything that failed.")),
+              "Carry on with everything paused, and retry everything that failed."),
+             ("Download again", lambda: self._for_selected(self._again),
+              "Download the selected finished rows from scratch, replacing the files.")),
             (("Remove", self._remove_selected,
               "Take the selected rows off the list (Delete key). Finished files stay; "
               "for unfinished ones it asks, then deletes the partial files."),
@@ -410,7 +422,8 @@ class App(tk.Tk):
                                           ("progress", "Status", m("x" * 46), True)):
             self.tree.heading(col, text=text, anchor="w")
             self.tree.column(col, width=width, stretch=stretch, anchor="w")
-        for tag, color in (("Done", GOOD), ("Error", BAD), ("Paused", WARN), ("Queued", MUTED)):
+        for tag, color in (("Done", GOOD), ("Error", BAD), ("Paused", WARN), ("Waiting", WARN),
+                           ("Queued", MUTED)):
             self.tree.tag_configure(tag, foreground=color)
         scroll = ttk.Scrollbar(table, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -428,7 +441,7 @@ class App(tk.Tk):
 
         self.menu = tk.Menu(self, tearoff=False)
         for text, fn in (("Pause", self._pause), ("Resume / retry", self._resume),
-                         ("Remove", None), (None, None),
+                         ("Download again", self._again), ("Remove", None), (None, None),
                          ("Open folder", self._open_job_folder), ("Copy link", self._copy_link),
                          ("Copy yt-dlp command", self._copy_command)):
             if text is None:
@@ -482,7 +495,9 @@ class App(tk.Tk):
         try:
             data = self.current_settings().to_dict() | {
                 "parallel": self.parallel.get(), "geometry": self.normal_geometry,
-                "maximized": self.state() == "zoomed"}
+                "maximized": self.state() == "zoomed", "auto_retry": self.auto_retry.get(),
+                "check_updates": self.check_updates.get(),
+                "last_update_check": self.last_update_check}
             write_json(SETTINGS_FILE, data)
             jobs = [j.to_dict() for j in self.jobs.values()
                     if j.status != "Done" and j.id not in self.remove_when_stopped]
@@ -548,8 +563,9 @@ class App(tk.Tk):
         return RESUME_DIR / f"{job.key}.txt"
 
     def _worker(self, job: Job):
-        # "Remember finished videos" already skips by ID; otherwise this link's own list
-        if job.settings.archive:
+        # "Remember finished videos" already skips by ID; otherwise this link's own list.
+        # Download again uses only its own (emptied) list, so nothing is skipped.
+        if job.settings.archive and not job.fresh:
             archive = ARCHIVE_FILE
         else:
             RESUME_DIR.mkdir(parents=True, exist_ok=True)
@@ -571,11 +587,21 @@ class App(tk.Tk):
             if changes:
                 self.pending.setdefault(job.id, {}).update(changes)
 
+    def _call_soon(self, fn, *args):
+        """Thread-safe: run fn(*args) on the UI thread. Tk mustn't be touched from
+        any other thread."""
+        with self.lock:
+            self.pending_calls.append((fn, args))
+
     def _pump(self):
         with self.lock:
             pending, self.pending = self.pending, {}
             logs = list(self.pending_log)
             self.pending_log.clear()
+            calls = list(self.pending_calls)
+            self.pending_calls.clear()
+        for fn, args in calls:
+            fn(*args)
         self._log_many([(f"#{job_id} {text}", level) for job_id, text, level in logs])
         finished = False
         for job_id, ch in pending.items():
@@ -588,13 +614,15 @@ class App(tk.Tk):
             if ch.get("_finished"):
                 finished = True
                 self.threads.pop(job_id, None)
-                if job.status == "Done":
-                    self._resume_file(job).unlink(missing_ok=True)
+                job.fresh = False
+                self._after_run(job)
                 if job_id in self.remove_when_stopped:
                     job.discard_partials()
                     self._forget(job)
                     continue
             self._update_row(job)
+        if self._tick_waiting():
+            finished = True
         if finished:
             self._save()
             self._schedule()
@@ -602,14 +630,49 @@ class App(tk.Tk):
             self._refresh_status()
         self.pump_job = self.after(150, self._pump)
 
+    def _after_run(self, job: Job):
+        """A run has ended. Retry it later if that could help, else settle it."""
+        failed = job.status == "Error" or (job.status == "Done" and job.errors)
+        if (failed and self.auto_retry.get() and job.retries < RETRIES
+                and job.id not in self.remove_when_stopped and not job.stop.is_set()
+                and engine.retryable(job.last_error)):
+            job.retries += 1
+            job.status, job.retry_at = "Waiting", time.time() + RETRY_DELAY
+            self._log(f"#{job.id} Retrying in {RETRY_DELAY}s "
+                      f"(try {job.retries + 1} of {RETRIES + 1})", "warn")
+            return
+        if job.status == "Done":
+            job.retries = 0
+            if not job.errors:  # with problems, keep it so a retry skips what worked
+                self._resume_file(job).unlink(missing_ok=True)
+
+    def _tick_waiting(self) -> bool:
+        """Count down waiting retries; requeue the ones whose time has come."""
+        requeued = False
+        now = time.time()
+        for job in self.jobs.values():
+            if job.status != "Waiting":
+                continue
+            left = job.retry_at - now
+            if left <= 0:
+                job.status, job.progress = "Queued", ""
+                requeued = True
+            else:
+                text = f"Retrying in {left:.0f}s (try {job.retries + 1} of {RETRIES + 1})"
+                if text != job.progress:
+                    job.progress = text
+                    self._update_row(job)
+        return requeued
+
     def _refresh_status(self):
         counts: dict[str, int] = {}
         for j in self.jobs.values():
             key = "active" if j.active else j.status
             counts[key] = counts.get(key, 0) + 1
         parts = [f"{counts[k]} {label}" for k, label in
-                 (("active", "downloading"), ("Queued", "queued"), ("Paused", "paused"),
-                  ("Error", "failed"), ("Done", "done")) if counts.get(k)]
+                 (("active", "downloading"), ("Queued", "queued"), ("Waiting", "retrying"),
+                  ("Paused", "paused"), ("Error", "failed"), ("Done", "done"))
+                 if counts.get(k)]
         self.status.set(" · ".join(parts))
         # The taskbar shows how it's going while the window is minimized
         active = counts.get("active", 0)
@@ -641,13 +704,20 @@ class App(tk.Tk):
         if job.id in self.threads:
             job.stop.set()
             job.progress = "Pausing…"
-        elif job.status == "Queued":
+        elif job.status in ("Queued", "Waiting"):
             job.status, job.progress = "Paused", ""
         self._update_row(job)
 
     def _resume(self, job: Job):
-        # Not "Done": Resume with nothing selected would re-run every finished link
-        if job.id not in self.threads and job.status in ("Paused", "Error"):
+        # Not "Done": Resume all would re-run every finished link (Download again does)
+        if job.id not in self.threads and job.status in ("Paused", "Error", "Waiting"):
+            job.status, job.progress, job.retries = "Queued", "", 0
+            self._update_row(job)
+
+    def _again(self, job: Job):
+        if job.id not in self.threads and job.status in ("Done", "Error"):
+            self._resume_file(job).unlink(missing_ok=True)
+            job.fresh, job.retries = True, 0
             job.status, job.progress = "Queued", ""
             self._update_row(job)
 
@@ -865,6 +935,10 @@ class App(tk.Tk):
               "Part of a playlist, such as 1-20. Only for the next link you add")
         check("compatible", "Prefer H.264 video (for old TVs and phones; usually 1080p at most)")
         check("archive", "Remember finished videos and skip them next time")
+        ttk.Checkbutton(f, text=f"Retry failed downloads automatically ({RETRIES} more tries, "
+                                f"a minute apart)", variable=self.auto_retry).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=2)
+        row += 1
 
         section("Access")
         field("Login from", self._combo(f, "cookies", BROWSER, 22),
@@ -883,6 +957,9 @@ class App(tk.Tk):
                               "Sites change often. If downloads start failing, update.")
         self.update_btn.pack(side="right")
         row += 1
+        ttk.Checkbutton(f, text="Check for a new yt-dlp once a week", variable=self.check_updates
+                        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        row += 1
 
         ttk.Separator(f).grid(row=row, column=0, columnspan=2, sticky="we", pady=12)
         row += 1
@@ -894,11 +971,33 @@ class App(tk.Tk):
         ttk.Button(f, text="Close", command=lambda: self._close_toplevel("options_window")
                    ).grid(row=row, column=1, sticky="e", pady=(10, 0))
 
-    def _update_ytdlp(self):
-        if self.threads:
-            messagebox.showinfo("Downers", "Pause or finish the downloads first.", parent=self)
+    def _maybe_check_for_update(self):
+        """Once a week, look for a newer yt-dlp in the background and offer it."""
+        if not self.check_updates.get() or time.time() - self.last_update_check < UPDATE_CHECK_EVERY:
             return
-        self.update_btn.configure(state="disabled", text="Checking…")
+        current, proxy = yt_dlp.version.__version__, self.v["proxy"].get().strip()
+
+        def work():
+            try:
+                latest = updater.latest_version(proxy)
+            except Exception as e:
+                self._call_soon(self._log, f"Couldn't check for a yt-dlp update: {e}", "warn")
+                return
+            self._call_soon(offer, latest)
+
+        def offer(latest):
+            self.last_update_check = time.time()  # asked or not, not again for a week
+            self._save()
+            if updater.is_newer(latest, current) and messagebox.askyesno(
+                    "Downers", f"A new yt-dlp is out: {latest} (you have {current}).\n"
+                               "Sites change often, so newer is usually better. "
+                               "Update now?", parent=self):
+                self._update_ytdlp()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_ytdlp(self):
+        self._set_update_button("disabled", "Checking…")
         current, proxy = yt_dlp.version.__version__, self.v["proxy"].get().strip()
 
         def work():
@@ -906,23 +1005,30 @@ class App(tk.Tk):
                 result = updater.update(current, proxy)
             except Exception as e:
                 result = None, f"Update failed: {e}"
-            self.after(0, done, *result)
+            self._call_soon(done, *result)
 
         def done(changed, message):
             self._log(message, "error" if changed is None else "info")
-            try:
-                self.update_btn.configure(state="normal", text="Update yt-dlp")
-            except tk.TclError:
-                pass
+            self._set_update_button("normal", "Update yt-dlp")
+            running = "\nDownloads in progress pause and carry on after." if self.threads else ""
             if changed and messagebox.askyesno(
-                    "Downers", f"{message}\nRestart Downers now to use it?", parent=self):
+                    "Downers", f"{message}\nRestart Downers now to use it?{running}",
+                    parent=self):
                 self._restart()
             elif not changed:
                 messagebox.showinfo("Downers", message, parent=self)
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _set_update_button(self, state, text):
+        # The button lives in Options, which may be closed
+        try:
+            self.update_btn.configure(state=state, text=text)
+        except (AttributeError, tk.TclError):
+            pass
+
     def _restart(self):
+        self._pause_everything()
         self._save()
         command = [sys.executable] if FROZEN else [sys.executable, "-m", "downers"]
         # Without this, the new exe would reuse this one's unpack folder, which is
@@ -938,15 +1044,19 @@ class App(tk.Tk):
                     "Downers", "Downloads are running. Pause them and quit?\n"
                                "They'll carry on next time you open Downers.", parent=self):
                 return
-            for job in self.jobs.values():
-                job.stop.set()
-            for t in list(self.threads.values()):
-                t.join(timeout=3)
-            for job in self.jobs.values():
-                if job.active:
-                    job.status = "Paused"
+            self._pause_everything()
         self._save()
         self.destroy()
+
+    def _pause_everything(self):
+        """Stop what's running, and queue it, so it carries on next time Downers opens."""
+        for job in self.jobs.values():
+            job.stop.set()
+        for t in list(self.threads.values()):
+            t.join(timeout=3)
+        for job in self.jobs.values():
+            if job.active:
+                job.status = "Queued"
 
     def destroy(self):
         self.after_cancel(self.pump_job)
