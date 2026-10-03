@@ -1,5 +1,7 @@
 """The window: layout, queue handling, remembering. Needs a desktop session."""
 
+import gc
+import threading
 import tkinter
 
 import pytest
@@ -7,16 +9,46 @@ import pytest
 from downers import app as A
 
 
+# Downers makes one window and keeps it. These tests make and close dozens, and Tk
+# doesn't like an old window's interpreter being torn down on a background thread
+# (whichever thread lets go of the window last) while a new one starts: the new one
+# then fails to read Tk's own files ("Can't find a usable init.tcl / tk.tcl"). So
+# every test waits for its threads and tears down on this thread, and starting a
+# window retries that one failure.
+
+def settle():
+    for t in threading.enumerate():
+        if t is not threading.main_thread():
+            t.join(10)
+    gc.collect()
+
+
+@pytest.fixture(autouse=True)
+def one_test_at_a_time():
+    settle()
+    yield
+    settle()
+
+
 def new_app():
-    """A.App(), retried if Tk fails to start. Making and destroying many Tk windows
-    in one process occasionally fails to read Tk's own files ("Can't find a usable
-    tk.tcl"); Downers makes one window, so only the tests meet this."""
     for attempt in range(3):
         try:
             return A.App()
         except tkinter.TclError as e:
-            if "usable tk.tcl" not in str(e) or attempt == 2:
+            if "usable" not in str(e) or attempt == 2:
                 raise
+            settle()
+
+
+def close(w):
+    """Wait for its downloads, then close it from this thread."""
+    for t in list(w.threads.values()):
+        t.join(10)
+    try:
+        w.destroy()
+    except tkinter.TclError:
+        pass  # already closed by the test
+    settle()
 
 
 @pytest.fixture
@@ -46,7 +78,7 @@ def test_window_size_and_position_are_restored(data_dir):
     try:
         assert w.geometry() == "1000x600+150+120"
     finally:
-        w.destroy()
+        close(w)
 
 
 def test_maximized_comes_back_maximized_with_the_old_size_behind_it(data_dir):
@@ -65,7 +97,7 @@ def test_maximized_comes_back_maximized_with_the_old_size_behind_it(data_dir):
         w.update()
         assert w.geometry() == "900x550+200+150"
     finally:
-        w.destroy()
+        close(w)
 
 
 @pytest.fixture
@@ -73,7 +105,7 @@ def app(data_dir, monkeypatch):
     w = new_app()
     monkeypatch.setattr(w, "_schedule", lambda: None)  # queue only, no downloads
     yield w
-    w.destroy()
+    close(w)
 
 
 def test_same_link_twice_is_queued_once(app):
@@ -181,7 +213,7 @@ def test_login_and_proxy_set_later_apply_on_resume(data_dir, monkeypatch):
         assert (retried.cookies, retried.proxy) == ("firefox", "socks5://127.0.0.1:1080")
         assert retried.mode == "video"
     finally:
-        w.destroy()
+        close(w)
 
 
 def test_items_apply_to_the_next_link_only(app):
@@ -221,7 +253,7 @@ def fake_runs(data_dir, monkeypatch):
     monkeypatch.setattr(A.engine, "run", run)
     w = new_app()
     yield w, runs, outcomes
-    w.destroy()
+    close(w)
 
 
 def finish(w):
