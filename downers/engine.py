@@ -43,6 +43,31 @@ PLAYLIST_TEMPLATE = "%(playlist_title)s/%(playlist_index)s - %(title)s.%(ext)s"
 # Formats whose files can carry cover art
 THUMBNAIL_AUDIO = {"original", "mp3", "m4a", "opus", "flac"}
 
+# yt-dlp's post-processor names, in words
+STEPS = {"Merger": "Merging video and sound", "ExtractAudio": "Converting audio",
+         "ThumbnailsConvertor": "Preparing cover", "EmbedThumbnail": "Adding cover",
+         "Metadata": "Adding tags", "FFmpegMetadata": "Adding tags",
+         "SponsorBlock": "Finding sponsors", "ModifyChapters": "Cutting sponsors",
+         "EmbedSubtitle": "Adding subtitles", "MoveFiles": "Finishing"}
+
+# Recognizable failures, and what to do about them
+HINTS = (
+    ("not a bot", "YouTube wants a login: set Login from in Options, then Resume"),
+    ("confirm your age", "Age-restricted: set Login from in Options, then Resume"),
+    ("members-only", "Members only: set Login from in Options, then Resume"),
+    ("private video", "Private video: needs a login that can see it"),
+    ("video unavailable", "This video isn't available"),
+    ("not available in your country", "Blocked in your country: try a Proxy in Options"),
+    ("unable to download webpage", "Couldn't reach the site: check the connection or Proxy"),
+    ("unsupported url", "Downers can't download from this link"),
+    ("http error 403", "The site refused the download: try Update yt-dlp in Options"),
+)
+
+
+def hint(message: str) -> str | None:
+    lowered = message.lower()
+    return next((h for needle, h in HINTS if needle in lowered), None)
+
 
 @dataclass
 class Settings:
@@ -132,8 +157,7 @@ def build_argv(s: Settings, archive_file: Path | None = None) -> list[str]:
             sort.append(f"res:{s.video_quality}")
         if s.compatible:
             sort += ["vcodec:h264", "acodec:m4a"]
-        if s.audio_quality != "best":
-            sort.append(f"abr:{s.audio_quality}")
+        # Audio quality is an audio-only setting: a video always gets the best sound
         argv += ["-f", "bv*+ba/b", "--merge-output-format", s.container]
         if s.subtitles.strip():
             argv += ["--write-subs", "--sub-langs", s.subtitles.strip(), "--embed-subs"]
@@ -191,6 +215,8 @@ class Job:
     status: str = "Queued"      # Queued, Starting, Downloading, Processing, Paused, Done, Error
     progress: str = ""
     errors: int = 0
+    folder: str = ""            # where its files are going, once known
+    last_error: str = ""
     id: int = field(default_factory=lambda: next(_ids))
     stop: threading.Event = field(default_factory=threading.Event, repr=False)
     key: str = field(default_factory=lambda: uuid.uuid4().hex)  # names its resume file
@@ -237,6 +263,22 @@ class Job:
         return count
 
 
+def describe(d: dict, s: Settings) -> str:
+    """A progress report in words: "42% · 4.1 MB/s · 21s left"."""
+    total = d.get("total_bytes") or d.get("total_bytes_estimate")
+    parts = [f"{d['downloaded_bytes'] / total * 100:.0f}%" if total else "Downloading"]
+    if d.get("info_dict", {}).get("vcodec") == "none" and s.mode == "video":
+        parts[0] += " (sound)"  # the second of a video's two streams
+    if speed := d.get("speed"):
+        parts.append(f"{speed / 1e6:.1f} MB/s" if speed >= 1e6 else f"{speed / 1e3:.0f} KB/s")
+    if (eta := d.get("eta")) is not None:
+        m, sec = divmod(int(eta), 60)
+        h, m = divmod(m, 60)
+        parts.append(f"{h}h {m:02d}m left" if h else f"{m}m {sec:02d}s left" if m
+                     else f"{sec}s left")
+    return " · ".join(parts)
+
+
 class _Logger:
     def __init__(self, job: Job, emit: Callable):
         self.job, self.emit = job, emit
@@ -257,6 +299,7 @@ class _Logger:
 
     def error(self, msg):
         self.job.errors += 1
+        self.job.last_error = msg
         self.emit(self.job, log=msg, level="error")
 
 
@@ -272,7 +315,7 @@ def run(job: Job, emit: Callable, archive_file: Path | None = None) -> None:
 
     def item_label(info: dict) -> str:
         i, n = info.get("playlist_index"), info.get("n_entries") or info.get("playlist_count")
-        return f"[{i}/{n}] " if i and n else ""
+        return f"{i} of {n} · " if i and n else ""
 
     last_report = [0.0]
 
@@ -290,26 +333,23 @@ def run(job: Job, emit: Callable, archive_file: Path | None = None) -> None:
             if now - last_report[0] < PROGRESS_INTERVAL:
                 return
             last_report[0] = now
-            total = d.get("total_bytes") or d.get("total_bytes_estimate")
-            pct = f"{d['downloaded_bytes'] / total * 100:.0f}%" if total else ""
-            speed = (d.get("_speed_str") or "").strip()
-            eta = (d.get("_eta_str") or "").strip()
-            stream = " audio" if info.get("vcodec") == "none" and s.mode == "video" else ""
-            emit(job, status="Downloading",
-                 progress=f"{item_label(info)}{pct}{stream}  {speed}  ETA {eta}".strip())
+            emit(job, status="Downloading", progress=item_label(info) + describe(d, s))
         elif d["status"] == "finished":
-            emit(job, status="Processing", progress=f"{item_label(info)}processing")
+            if d.get("filename"):
+                emit(job, folder=str(Path(d["filename"]).parent))
+            emit(job, status="Processing", progress=f"{item_label(info)}Processing")
 
     def postprocess(d):
         if job.stop.is_set():
             raise DownloadCancelled("Paused")
         if d["status"] == "started":
-            emit(job, status="Processing",
-                 progress=f"{item_label(d.get('info_dict', {}))}{d['postprocessor']}")
+            step = STEPS.get(d["postprocessor"], "Processing")
+            emit(job, status="Processing", progress=f"{item_label(d.get('info_dict', {}))}{step}")
 
     opts.update(progress_hooks=[progress], postprocessor_hooks=[postprocess],
                 logger=_Logger(job, emit), noprogress=True)
 
+    job.last_error = ""
     emit(job, status="Starting", progress="Looking up link…")
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -317,7 +357,8 @@ def run(job: Job, emit: Callable, archive_file: Path | None = None) -> None:
             if job.stop.is_set():
                 raise DownloadCancelled("Paused")
             if info is None:
-                emit(job, status="Error", progress="Couldn't read this link (see log)")
+                emit(job, status="Error",
+                     progress=hint(job.last_error) or "Couldn't read this link (see Log)")
                 return
             collection = info.get("_type") in ("playlist", "multi_video") or (
                 info.get("_type") in ("url", "url_transparent") and s.whole_playlist
@@ -328,15 +369,15 @@ def run(job: Job, emit: Callable, archive_file: Path | None = None) -> None:
                 emit(job, title=info.get("title") or info.get("id") or job.url)
             ydl.process_ie_result(info, download=True)
     except DownloadCancelled:
-        emit(job, status="Paused", progress="Paused: resume to continue")
+        emit(job, status="Paused", progress="Paused")
         return
     except Exception as e:  # anything yt-dlp lets escape
         if job.stop.is_set():
-            emit(job, status="Paused", progress="Paused: resume to continue")
+            emit(job, status="Paused", progress="Paused")
         else:
             job.errors += 1
-            emit(job, status="Error", progress=str(e).splitlines()[0][:120], level="error",
-                 log=f"Failed: {e}")
+            emit(job, status="Error", level="error", log=f"Failed: {e}",
+                 progress=hint(str(e)) or str(e).splitlines()[0][:120])
         return
     finally:
         # Interrupting a download that comes in pieces (HLS, DASH) leaves yt-dlp's
@@ -345,8 +386,10 @@ def run(job: Job, emit: Callable, archive_file: Path | None = None) -> None:
         gc.collect()
 
     if job.stop.is_set():
-        emit(job, status="Paused", progress="Paused: resume to continue")
+        emit(job, status="Paused", progress="Paused")
     elif job.errors:
-        emit(job, status="Done", progress=f"Finished with {job.errors} problem(s), see log")
+        problems = "1 problem" if job.errors == 1 else f"{job.errors} problems"
+        emit(job, status="Done",
+             progress=f"Done · {problems}: {hint(job.last_error) or 'see Log'}")
     else:
         emit(job, status="Done", progress="Done")

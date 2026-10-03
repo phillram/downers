@@ -2,7 +2,7 @@
 
 import yt_dlp
 
-from downers.engine import Job, Settings, build_argv, command_line
+from downers.engine import Job, Settings, build_argv, command_line, describe, hint
 
 
 def opts(**kw):
@@ -23,10 +23,21 @@ def test_video_defaults_to_best_with_thumbnail():
     assert o["noplaylist"] is True
 
 
-def test_video_quality_caps_resolution_and_audio_bitrate():
+def test_video_quality_caps_resolution_but_never_the_sound():
+    # Audio quality left at 128k from an earlier MP3 must not cap a video's soundtrack
     o = opts(video_quality="1080", audio_quality="128", compatible=True, container="mkv")
-    assert o["format_sort"] == ["res:1080", "vcodec:h264", "acodec:m4a", "abr:128"]
+    assert o["format_sort"] == ["res:1080", "vcodec:h264", "acodec:m4a"]
     assert o["merge_output_format"] == "mkv"
+
+
+def test_progress_and_errors_read_as_words():
+    d = {"downloaded_bytes": 42, "total_bytes": 100, "speed": 4_100_000, "eta": 81,
+         "info_dict": {}}
+    assert describe(d, Settings()) == "42% · 4.1 MB/s · 1m 21s left"
+    assert describe({"downloaded_bytes": 5, "eta": 9, "info_dict": {"vcodec": "none"}},
+                    Settings()) == "Downloading (sound) · 9s left"
+    assert "Login from" in hint("ERROR: Sign in to confirm you're not a bot")
+    assert hint("something nobody has seen") is None
 
 
 def test_audio_best_keeps_original_stream():

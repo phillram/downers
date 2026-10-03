@@ -30,52 +30,56 @@ python tools/build_exe.py        # puts Downers.exe and its helpers in this fold
 
 ## Using it
 
-Paste a link and press Enter. **Paste** adds every link on the clipboard. Each link keeps the
-settings it was added with, so a 1080p video and an MP3 can sit in the same queue. A link
-already waiting in the same format isn't added twice.
+Paste a link and press Enter, or press Ctrl+V anywhere in the window. Several links at once
+are fine. Each keeps the format it was added with, so a 1080p video and an MP3 can sit in the
+same list. Hover over any control for a short explanation.
 
 | Setting | Choices | Default |
 | --- | --- | --- |
-| Video | Best, 2160p, 1440p, 1080p, 720p, 480p, 360p. The best up to that height | Best |
-| Video file | MP4, MKV | MP4 |
-| Audio only | Original (YouTube's own stream, not re-encoded), MP3, M4A, Opus, FLAC, WAV | Original |
-| Audio quality | Best, 320k, 256k, 192k, 128k, 96k | Best |
-| Embed thumbnail | Cover art inside the file. Not WAV | On |
-| Tags & chapters | Title, uploader, date and chapter markers | On |
+| Video | Best, 2160p, 1440p, 1080p, 720p, 480p, 360p. The best up to that height. MP4 or MKV | Best, MP4 |
+| Audio only | Original (the site's own audio, not re-encoded), MP3, M4A, Opus, FLAC, WAV, at Best down to 96k | Original, Best |
+| Cover art | The thumbnail, inside the file. Not WAV | On |
+| Tags & chapters | Title, channel, date and chapter markers | On |
 | Cut sponsors | Removes sponsor, self-promotion and "like and subscribe" segments, via [SponsorBlock](https://sponsor.ajay.app) | Off |
-| Full playlist from video links | A `watch?v=…&list=…` link gets the whole playlist, not just that video | Off |
+| Whole playlist | A video link that's part of a playlist (`watch?v=…&list=…`) gets the whole playlist | Off |
 
 Files go to `Downloads\Downers` unless you choose another folder. A playlist gets its own
 folder with numbered files. A channel gets a folder per tab, such as `Name - Videos` and
 `Name - Shorts`; link to `youtube.com/@name/videos` for the videos alone.
 
-**Pause** and **Resume** act on the selected rows; **Pause all** and **Resume all** on the
-whole queue. Resuming also retries failed links. A paused download keeps its partial file and continues from
-the same byte. Finished playlist items are skipped. Closing Downers mid-download pauses it,
-and the queue is back next time. Only one Downers runs at a time; opening it again brings the
-open one forward.
+The toolbar works on the list:
+
+| Button | What it does |
+| --- | --- |
+| Pause, Pause all | Stop the selected downloads, or all of them. What's downloaded so far is kept |
+| Resume, Resume all | Carry on from the same byte, skipping finished playlist items. Failed links are retried |
+| Remove | Take the selected rows off the list (or press Delete). Finished files stay; for an unfinished download it asks, then deletes the partial files |
+| Clear done | Take finished rows off the list. The files stay |
+
+When something fails, its row says why and what to try, such as "YouTube wants a login: set
+Login from in Options, then Resume". **Log** has yt-dlp's full output.
 
 Right-click a row to open its folder, copy its link, or copy the equivalent yt-dlp command.
-Double-click opens the folder. **Remove** (or Delete) takes a row off the queue. Finished files
-stay; for an unfinished download it asks, then deletes the partial files.
+Double-click opens the folder. Closing Downers mid-download pauses it, and the list is back
+next time. Only one Downers runs at a time; opening it again brings the open one forward.
 
 ### Options
 
 | Option | What it does |
 | --- | --- |
-| Subtitles | Languages to embed in videos, such as `en` or `en,es` |
-| Items | Part of a playlist or channel, such as `1-20` or `1,5,8-10` |
+| At once | How many links download at the same time, 1 to 4 |
+| Speed limit | Such as `2M` for 2 MB/s |
+| Subtitles | Languages to put inside videos, such as `en` or `en,es` |
+| Items | Part of a playlist or channel, such as `1-20` or `1,5,8-10`. Only for the next link added |
+| Prefer H.264 video | For old TVs, phones and editors. YouTube rarely offers H.264 above 1080p |
+| Remember finished videos | Skip anything downloaded before. Rerun a channel to fetch only new uploads |
 | Login from | Use a browser's YouTube login. Close that browser first |
 | Cookies file | Use an exported `cookies.txt` instead |
 | Proxy | Such as `socks5://127.0.0.1:1080` or `http://host:port` |
-| Speed limit | Such as `2M` for 2 MB/s |
-| At once | How many links download at the same time, 1 to 4 |
-| Prefer H.264/AAC | For old TVs, phones and editors. YouTube rarely offers H.264 above 1080p |
-| Remember finished videos | Skip anything downloaded before. Rerun a channel to fetch only new uploads |
 | Update yt-dlp | Fetch the latest yt-dlp and restart |
 
-Options apply to links added after the change. **Log** shows yt-dlp's output, including why
-anything failed.
+Login, proxy and speed limit apply to every download as it starts, including ones already in
+the list. The rest apply to links added after the change.
 
 ## Do I need a YouTube login?
 

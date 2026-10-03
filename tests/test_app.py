@@ -66,7 +66,7 @@ def test_same_link_twice_is_queued_once(app):
     app._add_from_text("https://youtu.be/a https://youtu.be/a")
     app._add_from_text("https://youtu.be/a")
     assert len(app.jobs) == 1
-    assert app.status.get() == "Already in the queue"
+    assert app.status.get() == "Already in the list"
 
 
 def test_same_link_in_another_format_is_queued(app):
@@ -140,3 +140,51 @@ def test_pause_with_nothing_selected_does_nothing(app):
     app._for_selected(app._pause)
     assert job.status == "Queued"
     assert app.status.get() == "Select a row first"
+
+
+def test_login_and_proxy_set_later_apply_on_resume(data_dir, monkeypatch):
+    """Each link keeps its format, but connection options are read as it starts,
+    so fixing a "sign in" error in Options works on Resume."""
+    started = []
+    monkeypatch.setattr(A.engine, "run", lambda job, *a: started.append(job.settings))
+    w = A.App()
+    try:
+        w._add_from_text("https://youtu.be/a")
+        job = next(iter(w.jobs.values()))
+        w.threads[job.id].join(5)
+        w._pump()                            # it "finished"; now it failed
+        job.status = "Error"
+        w.v["cookies"].set("Firefox")
+        w.v["proxy"].set("socks5://127.0.0.1:1080")
+        w.v["mode"].set("audio")             # a format change must not touch it
+        w._for_all(w._resume)
+        w.threads[job.id].join(5)
+        retried = started[-1]
+        assert (retried.cookies, retried.proxy) == ("firefox", "socks5://127.0.0.1:1080")
+        assert retried.mode == "video"
+    finally:
+        w.destroy()
+
+
+def test_items_apply_to_the_next_link_only(app):
+    app.v["items"].set("1-20")
+    app._add_from_text("https://youtube.com/@a")
+    app._add_from_text("https://youtube.com/@b")
+    first, second = app.jobs.values()
+    assert (first.settings.items, second.settings.items) == ("1-20", "")
+
+
+def test_audio_quality_is_locked_in_video_mode(app):
+    app.v["mode"].set("video")
+    assert str(app.c_aq.cget("state")) == "disabled"
+    app.v["mode"].set("audio")
+    assert str(app.c_aq.cget("state")) == "readonly"
+
+
+def test_ctrl_v_outside_a_text_box_adds_the_clipboard(app):
+    app.clipboard_clear()
+    app.clipboard_append("look https://youtu.be/a and https://youtu.be/b")
+    app.tree.focus_set()
+    app.event_generate("<Control-v>", when="now")
+    app._ctrl_v(type("E", (), {"widget": app.tree})())
+    assert len(app.jobs) == 2

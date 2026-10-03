@@ -12,6 +12,7 @@ import sys
 import threading
 import tkinter as tk
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, font, messagebox, ttk
 
@@ -39,6 +40,46 @@ AUDIO_Q = {"Best": "best", "320k": "320", "256k": "256", "192k": "192",
            "128k": "128", "96k": "96"}
 BROWSER = {"None": "", "Firefox": "firefox", "Chrome": "chrome", "Edge": "edge",
            "Brave": "brave", "Opera": "opera", "Vivaldi": "vivaldi"}
+
+# Options that describe the connection rather than the download. These apply to every
+# download as it starts, so a login set after "sign in" errors works on Resume.
+LIVE = ("cookies", "cookies_file", "proxy", "rate_limit")
+
+
+class Tooltip:
+    """A short explanation that appears when the pointer rests on a widget."""
+
+    def __init__(self, widget: tk.Misc, text: str):
+        self.widget, self.text, self.tip, self.pending = widget, text, None, None
+        widget.bind("<Enter>", self._schedule, add=True)
+        widget.bind("<Leave>", self._hide, add=True)
+        widget.bind("<ButtonPress>", self._hide, add=True)
+
+    def _schedule(self, _):
+        self.pending = self.widget.after(500, self._show)
+
+    def _show(self):
+        x = self.widget.winfo_rootx()
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self.tip = tk.Toplevel(self.widget, bg=HOVER)
+        self.tip.wm_overrideredirect(True)
+        self.tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(self.tip, text=self.text, bg="#111214", fg=FG, justify="left",
+                 wraplength=320, padx=8, pady=5, font=("Segoe UI", 9)
+                 ).pack(padx=1, pady=1)
+
+    def _hide(self, _=None):
+        if self.pending:
+            self.widget.after_cancel(self.pending)
+            self.pending = None
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
+
+
+def tip(widget, text):
+    Tooltip(widget, text)
+    return widget
 
 
 def label_for(mapping: dict, value: str) -> str:
@@ -178,7 +219,9 @@ class App(tk.Tk):
         if on_screen(self.normal_geometry):
             self.geometry(self.normal_geometry)
         else:
-            center_over(self)
+            # A fixed size, or the window would widen whenever the status text grows
+            width = max(self.winfo_reqwidth(), self.ui_font.measure("x" * 140))
+            center_over(self, size=(width, self.winfo_reqheight()))
         dark_title_bar(self)
         self.bind("<Configure>", self._track_geometry, add=True)
         self.deiconify()
@@ -209,6 +252,10 @@ class App(tk.Tk):
         st.configure("Muted.TLabel", foreground=MUTED)
         st.configure("Bar.TFrame", background=PANEL)
         st.configure("Bar.TLabel", background=PANEL, foreground=MUTED)
+        st.configure("Hint.TLabel", background=PANEL, foreground=MUTED)
+        st.configure("Placeholder.TLabel", background=FIELD, foreground=MUTED)
+        st.configure("Section.TLabel", foreground=FG, font=("Segoe UI", 9, "bold"))
+        st.configure("TSeparator", background=HOVER)
         for w in ("TCheckbutton", "TRadiobutton"):
             st.configure(w, background=BG, indicatorbackground=FIELD,
                          indicatorforeground="white", indicatormargin=(0, 0, 4, 0))
@@ -247,75 +294,120 @@ class App(tk.Tk):
                             state="readonly", width=width)
 
     def _build(self):
-        # Toolbar: every button that isn't tied to a field, in one strip at the top
+        # Toolbar: the buttons that act on the queue, in groups, then the window ones
         bar = ttk.Frame(self, style="Bar.TFrame", padding=(10, 6))
         bar.pack(fill="x")
-        # Pause and Resume act on the selected rows; the "all" pair on everything
-        for text, cmd, gap in (
-                ("Pause", lambda: self._for_selected(self._pause), 4),
-                ("Resume", lambda: self._for_selected(self._resume), 4),
-                ("Pause all", lambda: self._for_all(self._pause), 4),
-                ("Resume all", lambda: self._for_all(self._resume), 12),
-                ("Remove", self._remove_selected, 4),
-                ("Clear done", self._clear_done, 4)):
-            ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(0, gap))
-        ttk.Button(bar, text="Log", command=self._show_log).pack(side="right")
-        ttk.Button(bar, text="Options", command=self._show_options).pack(side="right", padx=4)
-        ttk.Label(bar, textvariable=self.status, style="Bar.TLabel").pack(side="right", padx=8)
+        groups = (
+            (("Pause", lambda: self._for_selected(self._pause),
+              "Pause the selected downloads. What's downloaded so far is kept."),
+             ("Pause all", lambda: self._for_all(self._pause),
+              "Pause everything in the list.")),
+            (("Resume", lambda: self._for_selected(self._resume),
+              "Carry on with the selected downloads, or retry them if they failed."),
+             ("Resume all", lambda: self._for_all(self._resume),
+              "Carry on with everything paused, and retry everything that failed.")),
+            (("Remove", self._remove_selected,
+              "Take the selected rows off the list (Delete key). Finished files stay; "
+              "for unfinished ones it asks, then deletes the partial files."),
+             ("Clear done", self._clear_done,
+              "Take every finished row off the list. The files stay.")),
+        )
+        for i, group in enumerate(groups):
+            if i:
+                ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)
+            for text, command, help_text in group:
+                tip(ttk.Button(bar, text=text, command=command), help_text).pack(
+                    side="left", padx=(0, 4))
+        tip(ttk.Button(bar, text="Log", command=self._show_log),
+            "Everything yt-dlp reported, including why something failed.").pack(side="right")
+        tip(ttk.Button(bar, text="Options", command=self._show_options),
+            "Login, proxy, subtitles, speed limit, updating yt-dlp.").pack(side="right", padx=4)
+        ttk.Separator(bar, orient="vertical").pack(side="right", fill="y", padx=8)
+        ttk.Label(bar, textvariable=self.status, style="Bar.TLabel").pack(side="right")
 
-        root = ttk.Frame(self, padding=(10, 8, 10, 10))
+        root = ttk.Frame(self, padding=(10, 10, 10, 10))
         root.pack(fill="both", expand=True)
 
+        # The link box, with a hint inside it while it's empty
         add = ttk.Frame(root)
         add.pack(fill="x")
-        entry = ttk.Entry(add, textvariable=self.url)
+        self.entry = entry = ttk.Entry(add, textvariable=self.url)
         entry.pack(side="left", fill="x", expand=True)
         entry.bind("<Return>", lambda e: self._add_from_text(self.url.get()))
         entry.focus_set()
-        ttk.Button(add, text="Add", style="Accent.TButton",
-                   command=lambda: self._add_from_text(self.url.get())).pack(side="left", padx=(6, 0))
-        ttk.Button(add, text="Paste", command=self._paste).pack(side="left", padx=(4, 0))
+        placeholder = ttk.Label(entry, style="Placeholder.TLabel",
+                                text="Paste a link to a video, playlist or channel, then press Enter")
+        placeholder.bind("<Button-1>", lambda e: entry.focus_set())
 
+        def show_placeholder(*_):
+            if self.url.get():
+                placeholder.place_forget()
+            else:
+                placeholder.place(x=5, rely=0.5, anchor="w")
+        self.url.trace_add("write", show_placeholder)
+        show_placeholder()
+        tip(ttk.Button(add, text="Add", style="Accent.TButton",
+                       command=lambda: self._add_from_text(self.url.get())),
+            "Add the link above (Enter).").pack(side="left", padx=(6, 0))
+        tip(ttk.Button(add, text="Paste", command=self._paste),
+            "Add every link on the clipboard (Ctrl+V anywhere in the window)."
+            ).pack(side="left", padx=(4, 0))
+
+        # What to download: each choice beside the drop-downs it unlocks
         fmt = ttk.Frame(root)
-        fmt.pack(fill="x", pady=(8, 0))
+        fmt.pack(fill="x", pady=(10, 0))
         ttk.Radiobutton(fmt, text="Video", value="video", variable=self.v["mode"]).pack(side="left")
+        self.c_vq = tip(self._combo(fmt, "video_quality", VIDEO_Q, 9),
+                        "The highest resolution to get. Best takes the top one available.")
+        self.c_vq.pack(side="left", padx=(6, 4))
+        self.c_ct = tip(self._combo(fmt, "container", CONTAINER, 5),
+                        "MP4 plays almost everywhere. MKV can hold any format, subtitles "
+                        "included.")
+        self.c_ct.pack(side="left")
+        ttk.Separator(fmt, orient="vertical").pack(side="left", fill="y", padx=14)
         ttk.Radiobutton(fmt, text="Audio only", value="audio",
-                        variable=self.v["mode"]).pack(side="left", padx=(8, 16))
-        ttk.Label(fmt, text="Video", style="Muted.TLabel").pack(side="left")
-        self.c_vq = self._combo(fmt, "video_quality", VIDEO_Q, 9)
-        self.c_vq.pack(side="left", padx=(4, 2))
-        self.c_ct = self._combo(fmt, "container", CONTAINER, 5)
-        self.c_ct.pack(side="left", padx=(0, 16))
-        ttk.Label(fmt, text="Audio", style="Muted.TLabel").pack(side="left")
-        self.c_af = self._combo(fmt, "audio_format", AUDIO_FMT, 8)
-        self.c_af.pack(side="left", padx=(4, 2))
-        self.c_aq = self._combo(fmt, "audio_quality", AUDIO_Q, 6)
+                        variable=self.v["mode"]).pack(side="left")
+        self.c_af = tip(self._combo(fmt, "audio_format", AUDIO_FMT, 8),
+                        "Original keeps the site's own audio, untouched: the best quality, "
+                        "usually as .opus or .m4a. MP3 plays everywhere.")
+        self.c_af.pack(side="left", padx=(6, 4))
+        self.c_aq = tip(self._combo(fmt, "audio_quality", AUDIO_Q, 6),
+                        "Bitrate when converting. Best keeps the most detail.")
         self.c_aq.pack(side="left")
 
         checks = ttk.Frame(root)
-        checks.pack(fill="x", pady=(6, 0))
-        for key, text in (("thumbnail", "Embed thumbnail"), ("metadata", "Tags & chapters"),
-                          ("sponsorblock", "Cut sponsors"),
-                          ("whole_playlist", "Full playlist from video links")):
-            ttk.Checkbutton(checks, text=text, variable=self.v[key]).pack(side="left", padx=(0, 12))
+        checks.pack(fill="x", pady=(8, 0))
+        for key, text, help_text in (
+                ("thumbnail", "Cover art", "Put the video's thumbnail inside the file."),
+                ("metadata", "Tags & chapters",
+                 "Save the title, channel and date in the file, and chapter markers."),
+                ("sponsorblock", "Cut sponsors",
+                 "Cut out sponsor segments, self-promotion and \"like and subscribe\" "
+                 "reminders, using SponsorBlock's community list."),
+                ("whole_playlist", "Whole playlist",
+                 "When a video link is part of a playlist (…watch?v=…&list=…), download "
+                 "the whole playlist instead of just that video.")):
+            tip(ttk.Checkbutton(checks, text=text, variable=self.v[key]), help_text).pack(
+                side="left", padx=(0, 14))
 
         out = ttk.Frame(root)
-        out.pack(fill="x", pady=(6, 10))
+        out.pack(fill="x", pady=(8, 10))
         ttk.Label(out, text="Save to", style="Muted.TLabel").pack(side="left")
         ttk.Entry(out, textvariable=self.v["output_dir"]).pack(side="left", fill="x",
                                                                expand=True, padx=6)
-        ttk.Button(out, text="Browse", command=self._browse).pack(side="left")
-        ttk.Button(out, text="Open", command=lambda: self._open(self.v["output_dir"].get())
-                   ).pack(side="left", padx=(4, 0))
+        tip(ttk.Button(out, text="Browse", command=self._browse),
+            "Choose where downloads go.").pack(side="left")
+        tip(ttk.Button(out, text="Open", command=lambda: self._open(self.v["output_dir"].get())),
+            "Open the download folder.").pack(side="left", padx=(4, 0))
 
         table = ttk.Frame(root)
         table.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(table, columns=("title", "format", "progress"),
                                  show="headings", selectmode="extended", height=8)
         m = self.ui_font.measure
-        for col, text, width, stretch in (("title", "Title", m("x" * 40), True),
-                                          ("format", "Format", m("Audio best  "), False),
-                                          ("progress", "Progress", m("x" * 34), True)):
+        for col, text, width, stretch in (("title", "Title", m("x" * 34), True),
+                                          ("format", "Format", m("1080p MKV    "), False),
+                                          ("progress", "Status", m("x" * 46), True)):
             self.tree.heading(col, text=text, anchor="w")
             self.tree.column(col, width=width, stretch=stretch, anchor="w")
         for tag, color in (("Done", GOOD), ("Error", BAD), ("Paused", WARN), ("Queued", MUTED)):
@@ -324,9 +416,15 @@ class App(tk.Tk):
         self.tree.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True)
+        self.empty_hint = ttk.Label(self.tree, style="Hint.TLabel", justify="center",
+                                    text="Your downloads will show here.\n"
+                                         "Right-click one for more, double-click to open "
+                                         "its folder.")
         self.tree.bind("<Button-3>", self._context_menu)
         self.tree.bind("<Double-1>", self._double_click)
         self.tree.bind("<Delete>", lambda e: self._remove_selected())
+        self.tree.bind("<Control-a>", lambda e: self.tree.selection_set(self.tree.get_children()))
+        self.bind("<Control-v>", self._ctrl_v)
 
         self.menu = tk.Menu(self, tearoff=False)
         for text, fn in (("Pause", self._pause), ("Resume / retry", self._resume),
@@ -339,11 +437,16 @@ class App(tk.Tk):
                 self.menu.add_command(label=text, command=self._remove_selected if fn is None
                                       else lambda f=fn: self._for_selected(f))
 
+    def _ctrl_v(self, event):
+        # In a text box, Ctrl+V pastes as usual; anywhere else it adds the links
+        if not isinstance(event.widget, (ttk.Entry, tk.Entry, ttk.Combobox, tk.Text)):
+            self._paste()
+
     def _sync_controls(self):
         video = self.v["mode"].get() == "video"
         lossless = self.v["audio_format"].get() in ("FLAC", "WAV")
         for combo, on in ((self.c_vq, video), (self.c_ct, video), (self.c_af, not video),
-                          (self.c_aq, video or not lossless)):
+                          (self.c_aq, not video and not lossless)):
             combo.configure(state="readonly" if on else "disabled")
 
     # -------------------------------------------------------------- settings
@@ -392,7 +495,7 @@ class App(tk.Tk):
     def _add_from_text(self, text: str):
         urls = [w for w in text.split() if w.startswith(("http://", "https://"))]
         if not urls:
-            self.status.set("Paste a link (http…) first.")
+            self.status.set("That isn't a link: it should start with http")
             return
         settings = self.current_settings()
         # The same link with the same settings, not yet finished, is already in hand
@@ -404,12 +507,14 @@ class App(tk.Tk):
                 self._add_job(Job(url, Settings.from_dict(settings.to_dict())))
                 added += 1
         self.url.set("")
+        if added and settings.items:
+            self.v["items"].set("")  # "Items" is for the next link, not every link after
         self._save()
         self._schedule()
         skipped = len(set(urls)) - added
         if skipped:
-            self.status.set("Already in the queue" if not added else
-                            f"Added {added}; {skipped} already in the queue")
+            self.status.set("Already in the list" if not added else
+                            f"Added {added}; {skipped} already in the list")
 
     def _add_job(self, job: Job):
         self.jobs[job.id] = job
@@ -428,6 +533,8 @@ class App(tk.Tk):
             if len(self.threads) >= max(1, self.parallel.get()):
                 break
             if job.status == "Queued" and job.id not in self.threads:
+                live = self.current_settings()
+                job.settings = replace(job.settings, **{k: getattr(live, k) for k in LIVE})
                 job.stop.clear()
                 job.status, job.progress = "Starting", ""
                 self._update_row(job)
@@ -475,7 +582,7 @@ class App(tk.Tk):
             job = self.jobs.get(job_id)
             if job is None:
                 continue
-            for key in ("status", "progress", "title"):
+            for key in ("status", "progress", "title", "folder"):
                 if key in ch:
                     setattr(job, key, ch[key])
             if ch.get("_finished"):
@@ -503,7 +610,14 @@ class App(tk.Tk):
         parts = [f"{counts[k]} {label}" for k, label in
                  (("active", "downloading"), ("Queued", "queued"), ("Paused", "paused"),
                   ("Error", "failed"), ("Done", "done")) if counts.get(k)]
-        self.status.set(" · ".join(parts) or "Paste a link to start")
+        self.status.set(" · ".join(parts))
+        # The taskbar shows how it's going while the window is minimized
+        active = counts.get("active", 0)
+        self.title(f"Downers · {active} downloading" if active else "Downers")
+        if self.jobs:
+            self.empty_hint.place_forget()
+        else:
+            self.empty_hint.place(relx=0.5, rely=0.45, anchor="center")
 
     # ---------------------------------------------------------- job actions
 
@@ -538,6 +652,9 @@ class App(tk.Tk):
             self._update_row(job)
 
     def _remove_selected(self):
+        if not self.tree.selection():
+            self.status.set("Select a row first")
+            return
         jobs = [self.jobs[int(i)] for i in self.tree.selection() if int(i) in self.jobs]
         unfinished = [j for j in jobs if j.partials or j.id in self.threads]
         if unfinished and not messagebox.askyesno(
@@ -573,7 +690,9 @@ class App(tk.Tk):
         self._refresh_status()
 
     def _open_job_folder(self, job: Job):
-        self._open(job.settings.output_dir)
+        # A playlist's own folder once a file has landed, else the download folder
+        self._open(job.folder if job.folder and Path(job.folder).is_dir()
+                   else job.settings.output_dir)
 
     def _copy_link(self, job: Job):
         self.clipboard_clear()
@@ -600,9 +719,13 @@ class App(tk.Tk):
 
     def _paste(self):
         try:
-            self._add_from_text(self.clipboard_get())
+            text = self.clipboard_get()
         except tk.TclError:
-            self.status.set("Clipboard is empty.")
+            text = ""
+        if "http" not in text:
+            self.status.set("No link on the clipboard")
+            return
+        self._add_from_text(text)
 
     def _browse(self):
         folder = filedialog.askdirectory(parent=self,
@@ -658,6 +781,7 @@ class App(tk.Tk):
         win.transient(self)
 
         win.protocol("WM_DELETE_WINDOW", lambda: self._close_toplevel(attr))
+        win.bind("<Escape>", lambda e: self._close_toplevel(attr))
         setattr(self, attr, win)
         return win
 
@@ -704,47 +828,71 @@ class App(tk.Tk):
         if win is None:
             return
         win.resizable(False, False)
-        f = ttk.Frame(win, padding=12)
+        f = ttk.Frame(win, padding=(16, 12))
         f.pack(fill="both", expand=True)
-        rows = (
-            ("Subtitles", ttk.Entry(f, textvariable=self.v["subtitles"], width=24),
-             "Languages to embed, e.g. en or en,es (video only)"),
-            ("Items", ttk.Entry(f, textvariable=self.v["items"], width=24),
-             "Which playlist/channel items, e.g. 1-20 or 1,5,8-10"),
-            ("Login from", self._combo(f, "cookies", BROWSER, 22),
-             "Use a browser's YouTube login (age-restricted, members, private)"),
-            ("Cookies file", self._file_picker(f, "cookies_file"),
-             "Or an exported cookies.txt; used instead of the browser"),
-            ("Proxy", ttk.Entry(f, textvariable=self.v["proxy"], width=24),
-             "e.g. socks5://127.0.0.1:1080 or http://host:port"),
-            ("Speed limit", ttk.Entry(f, textvariable=self.v["rate_limit"], width=24),
-             "e.g. 2M for 2 MB/s; blank for no limit"),
-            ("At once", ttk.Spinbox(f, from_=1, to=4, textvariable=self.parallel, width=5,
-                                    state="readonly", command=self._schedule),
-             "How many links download at the same time"),
-        )
-        for r, (label, widget, hint) in enumerate(rows):
-            ttk.Label(f, text=label).grid(row=r * 2, column=0, sticky="w", padx=(0, 10))
-            widget.grid(row=r * 2, column=1, sticky="w")
-            ttk.Label(f, text=hint, style="Muted.TLabel").grid(row=r * 2 + 1, column=1,
+        f.columnconfigure(1, weight=1)
+        row = 0
+
+        def section(title):
+            nonlocal row
+            ttk.Label(f, text=title, style="Section.TLabel").grid(
+                row=row, column=0, columnspan=2, sticky="w", pady=(10 if row else 0, 4))
+            row += 1
+
+        def field(label, widget, hint):
+            nonlocal row
+            ttk.Label(f, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12))
+            widget.grid(row=row, column=1, sticky="w")
+            ttk.Label(f, text=hint, style="Muted.TLabel").grid(row=row + 1, column=1,
                                                                sticky="w", pady=(0, 6))
-        r = len(rows) * 2
-        ttk.Checkbutton(f, text="Prefer H.264/AAC (plays on old TVs and phones; may cap at 1080p)",
-                        variable=self.v["compatible"]).grid(row=r, column=0, columnspan=2,
-                                                            sticky="w", pady=2)
-        ttk.Checkbutton(f, text="Remember finished videos and skip them next time "
-                               "(handy for keeping a channel in sync)",
-                        variable=self.v["archive"]).grid(row=r + 1, column=0, columnspan=2,
-                                                         sticky="w", pady=2)
-        ttk.Label(f, text="Options apply to links added after you change them.",
-                  style="Muted.TLabel").grid(row=r + 2, column=0, columnspan=2, sticky="w",
-                                             pady=(8, 0))
-        btns = ttk.Frame(f)
-        btns.grid(row=r + 3, column=0, columnspan=2, sticky="we", pady=(10, 0))
-        self.update_btn = ttk.Button(btns, text="Update yt-dlp", command=self._update_ytdlp)
-        self.update_btn.pack(side="left")
-        ttk.Button(btns, text="Close",
-                   command=lambda: self._close_toplevel("options_window")).pack(side="right")
+            row += 2
+
+        def check(key, text):
+            nonlocal row
+            ttk.Checkbutton(f, text=text, variable=self.v[key]).grid(
+                row=row, column=0, columnspan=2, sticky="w", pady=2)
+            row += 1
+
+        section("Downloads")
+        field("At once", ttk.Spinbox(f, from_=1, to=4, textvariable=self.parallel, width=5,
+                                     state="readonly", command=self._schedule),
+              "How many links download at the same time")
+        field("Speed limit", ttk.Entry(f, textvariable=self.v["rate_limit"], width=24),
+              "Such as 2M for 2 MB/s. Blank for no limit")
+        field("Subtitles", ttk.Entry(f, textvariable=self.v["subtitles"], width=24),
+              "Languages to put inside videos, such as en or en,es")
+        field("Items", ttk.Entry(f, textvariable=self.v["items"], width=24),
+              "Part of a playlist, such as 1-20. Only for the next link you add")
+        check("compatible", "Prefer H.264 video (for old TVs and phones; usually 1080p at most)")
+        check("archive", "Remember finished videos and skip them next time")
+
+        section("Access")
+        field("Login from", self._combo(f, "cookies", BROWSER, 22),
+              "Use a browser's YouTube login. Close that browser first")
+        field("Cookies file", self._file_picker(f, "cookies_file"),
+              "Or an exported cookies.txt, used instead")
+        field("Proxy", ttk.Entry(f, textvariable=self.v["proxy"], width=24),
+              "Such as socks5://127.0.0.1:1080")
+
+        section("yt-dlp")
+        line = ttk.Frame(f)
+        line.grid(row=row, column=0, columnspan=2, sticky="we")
+        ttk.Label(line, text=f"Version {yt_dlp.version.__version__}"
+                  + (" (updated)" if updater.active else "")).pack(side="left")
+        self.update_btn = tip(ttk.Button(line, text="Update yt-dlp", command=self._update_ytdlp),
+                              "Sites change often. If downloads start failing, update.")
+        self.update_btn.pack(side="right")
+        row += 1
+
+        ttk.Separator(f).grid(row=row, column=0, columnspan=2, sticky="we", pady=12)
+        row += 1
+        ttk.Label(f, style="Muted.TLabel", justify="left", wraplength=self.ui_font.measure("x" * 70),
+                  text="Login, proxy and speed limit apply to every download as it starts. "
+                       "The rest apply to links added after you change them."
+                  ).grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        ttk.Button(f, text="Close", command=lambda: self._close_toplevel("options_window")
+                   ).grid(row=row, column=1, sticky="e", pady=(10, 0))
 
     def _update_ytdlp(self):
         if self.threads:
@@ -831,12 +979,29 @@ def single_instance() -> bool:
     except Exception:
         return True
     user32 = ctypes.windll.user32
-    hwnd = user32.FindWindowW(None, "Downers")
+    hwnd = find_main_window()
     if hwnd:
         if user32.IsIconic(hwnd):
             user32.ShowWindow(hwnd, 9)  # SW_RESTORE
         user32.SetForegroundWindow(hwnd)
     return False
+
+
+def find_main_window() -> int:
+    """The main window's handle. Its title changes ("Downers · 2 downloading"), so
+    match on that rather than on an exact title."""
+    found = []
+    proto = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def check(hwnd, _):
+        buffer = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetWindowTextW(hwnd, buffer, 256)
+        if buffer.value == "Downers" or buffer.value.startswith("Downers · "):
+            found.append(hwnd)
+            return False
+        return True
+    ctypes.windll.user32.EnumWindows(proto(check), 0)
+    return found[0] if found else 0
 
 
 def release_instance() -> None:
