@@ -162,8 +162,12 @@ class App(tk.Tk):
         self._log(f"Downers {__version__}, yt-dlp {yt_dlp.version.__version__}"
                   + (" (updated copy)" if updater.active else ""), "muted")
         if not engine.ffmpeg_path():
-            self._log("ffmpeg not found: merging, MP3 and thumbnails will fail. "
-                      "Run: pip install imageio-ffmpeg", "warn")
+            self._log("ffmpeg.exe not found beside Downers: merging, MP3 and thumbnails "
+                      "will fail. From source, run: python tools/fetch_ffmpeg.py", "warn")
+        elif not engine.ffprobe_path():
+            self._log("ffprobe.exe not found beside ffmpeg.exe: MKV thumbnails and Cut "
+                      "sponsors will fail. From source, run: python tools/fetch_ffmpeg.py",
+                      "warn")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh_status()

@@ -10,20 +10,22 @@ Windows only. Dark themed.
 
 Download `Downers.zip` from the
 [latest release](https://github.com/phillram/downers/releases/latest) and unzip it. Keep the
-three files together:
+four files together:
 
 | File | What it's for |
 | --- | --- |
 | `Downers.exe` | The app |
 | `ffmpeg.exe` | Merging video with audio, converting audio, embedding thumbnails |
+| `ffprobe.exe` | Thumbnails in MKV files, cutting sponsors |
 | `deno.exe` | Solving YouTube's JavaScript challenges, without which the best formats are missing |
 
 From source, Python 3.10 or newer:
 
 ```
 pip install -r requirements.txt
+python tools/fetch_ffmpeg.py     # ffmpeg.exe and ffprobe.exe, once
 python -m downers                # the window
-python tools/build_exe.py        # puts Downers.exe, ffmpeg.exe and deno.exe in this folder
+python tools/build_exe.py        # puts Downers.exe and its helpers in this folder
 ```
 
 ## Using it
@@ -117,7 +119,8 @@ downers/
 │   └── paths.py        where files live, from source or from the exe
 ├── tests/
 ├── tools/
-│   ├── build_exe.py    builds Downers.exe and copies ffmpeg and Deno beside it
+│   ├── build_exe.py    builds Downers.exe and puts its helpers beside it
+│   ├── fetch_ffmpeg.py downloads and checks ffmpeg and ffprobe
 │   └── make_icon.py    redraws assets/downers.ico
 └── assets/
 ```

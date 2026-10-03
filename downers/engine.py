@@ -87,26 +87,32 @@ class Settings:
 
 # ---------------------------------------------------------------- helpers
 
-def _bundled(name: str, module: str, finder: str) -> str | None:
-    """A program beside Downers.exe, else from PATH, else the copy a pip package ships."""
+def _program(name: str) -> str | None:
+    """A program beside Downers.exe (or the project, from source), else on PATH."""
     beside = APP_DIR / f"{name}.exe"
-    if beside.exists():
-        return str(beside)
-    found = shutil.which(name)
-    if found:
-        return found
-    try:
-        return getattr(__import__(module), finder)()
-    except Exception:
-        return None
+    return str(beside) if beside.exists() else shutil.which(name)
 
 
 def ffmpeg_path() -> str | None:
-    return _bundled("ffmpeg", "imageio_ffmpeg", "get_ffmpeg_exe")
+    return _program("ffmpeg")
+
+
+def ffprobe_path() -> str | None:
+    """yt-dlp looks for ffprobe in ffmpeg's folder; this checks it's there."""
+    ffmpeg = ffmpeg_path()
+    probe = ffmpeg and Path(ffmpeg).with_name("ffprobe.exe")
+    return str(probe) if probe and probe.exists() else None
 
 
 def deno_path() -> str | None:
-    return _bundled("deno", "deno", "find_deno_bin")
+    found = _program("deno")
+    if found:
+        return found
+    try:
+        import deno  # the pip package, when running from source
+        return deno.find_deno_bin()
+    except Exception:
+        return None
 
 
 def build_argv(s: Settings, archive_file: Path | None = None) -> list[str]:
@@ -115,7 +121,8 @@ def build_argv(s: Settings, archive_file: Path | None = None) -> list[str]:
             "--concurrent-fragments", "4", "-P", s.output_dir, "-o", SINGLE_TEMPLATE]
 
     if ffmpeg := ffmpeg_path():
-        argv += ["--ffmpeg-location", ffmpeg]
+        # The folder, so yt-dlp finds ffprobe beside ffmpeg
+        argv += ["--ffmpeg-location", str(Path(ffmpeg).parent)]
     if deno := deno_path():
         argv += ["--js-runtimes", f"deno:{deno}"]
 

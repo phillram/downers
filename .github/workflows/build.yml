@@ -35,9 +35,9 @@ jobs:
       - name: Build the executable
         run: python tools/build_exe.py
 
-      # One zip, so the exe and the two helpers it needs stay together
+      # One zip, so the exe and the helpers it needs stay together
       - name: Zip
-        run: Compress-Archive -Path Downers.exe, ffmpeg.exe, deno.exe -DestinationPath Downers.zip
+        run: Compress-Archive -Path Downers.exe, ffmpeg.exe, ffprobe.exe, deno.exe -DestinationPath Downers.zip
 
       # No upload-artifact step: artifacts count against Actions storage.
       # The zip goes to the release instead, which does not.

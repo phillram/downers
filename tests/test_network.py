@@ -1,6 +1,7 @@
 """Real downloads. Skipped unless DOWNERS_NETWORK_TESTS=1, as they need the internet."""
 
 import os
+import subprocess
 import threading
 import time
 
@@ -52,3 +53,33 @@ def test_rerunning_a_playlist_skips_finished_items(tmp_path):
         engine.run(job, lambda _, **c: logs.append(c.get("log", "")), archive)
         downloads = [line for line in logs if line.startswith("[download] Destination")]
         assert len(downloads) == (2 if attempt == 1 else 0)
+
+
+def attached_pictures(path):
+    out = subprocess.run([engine.ffprobe_path(), "-v", "error", "-show_entries",
+                          "stream_disposition=attached_pic", "-of", "csv=p=0", str(path)],
+                         capture_output=True, text=True).stdout
+    return out.split().count("1")
+
+
+@pytest.mark.parametrize("settings", [
+    dict(container="mkv"), dict(container="mp4"), dict(mode="audio", audio_format="mp3"),
+], ids=["mkv", "mp4", "mp3"])
+def test_thumbnail_is_embedded_and_no_picture_is_left_beside_it(tmp_path, settings):
+    """MKV needs ffprobe to embed; without it the .jpg was left in the folder."""
+    job = engine.Job("https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                     engine.Settings(output_dir=str(tmp_path), **settings))
+    engine.run(job, lambda *_, **__: None)
+    files = list(tmp_path.iterdir())
+    assert len(files) == 1, files
+    assert attached_pictures(files[0]) == 1
+    assert job.errors == 0
+
+
+def test_cut_sponsors_works(tmp_path):
+    """SponsorBlock cutting reads the video's length with ffprobe."""
+    logs = []
+    job = engine.Job("https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                     engine.Settings(output_dir=str(tmp_path), sponsorblock=True))
+    engine.run(job, lambda _, **c: logs.append((c.get("level"), c.get("log", ""))))
+    assert job.errors == 0, [line for level, line in logs if level == "error"]

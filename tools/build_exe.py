@@ -2,16 +2,18 @@
 
     python tools/build_exe.py
 
-Puts three files straight into the project folder. They run on any Windows PC
+Puts four files straight into the project folder. They run on any Windows PC
 without Python, as long as they stay together:
 
     Downers.exe    the app (yt-dlp is inside it)
     ffmpeg.exe     merging, converting, embedding thumbnails
+    ffprobe.exe    MKV thumbnails, cutting sponsors, checking results
     deno.exe       solves YouTube's JavaScript challenges
 
-The two helpers stay beside the exe rather than inside it: packed in, all
-~185 MB would be unpacked to a temp folder on every launch. Run this again
-after changing any of the code. All three are gitignored.
+The helpers stay beside the exe rather than inside it: packed in, all ~300 MB
+would be unpacked to a temp folder on every launch. ffmpeg and ffprobe come
+from fetch_ffmpeg.py, deno from its pip package. Run this again after changing
+any of the code. All four are gitignored.
 """
 
 from __future__ import annotations
@@ -46,17 +48,10 @@ def _is_running() -> bool:
         return True
 
 
-def _helpers() -> dict[str, Path]:
-    import deno
-    import imageio_ffmpeg
-    return {"ffmpeg.exe": Path(imageio_ffmpeg.get_ffmpeg_exe()),
-            "deno.exe": Path(deno.find_deno_bin())}
-
-
 def main() -> int:
     try:
+        import deno
         import PyInstaller  # noqa: F401
-        helpers = _helpers()
     except ImportError as e:
         print(f"Missing {e.name}. Run:")
         print(f"    {sys.executable} -m pip install pyinstaller -r requirements.txt")
@@ -100,11 +95,14 @@ def main() -> int:
 
     shutil.rmtree(WORK_DIR, ignore_errors=True)  # PyInstaller's scratch; keep the folder flat
 
-    for name, source in helpers.items():
-        target = OUT_DIR / name
-        if not (target.exists() and filecmp.cmp(source, target, shallow=False)):
-            print(f"Copying {name}")
-            shutil.copy2(source, target)
+    source, target = Path(deno.find_deno_bin()), OUT_DIR / "deno.exe"
+    if not (target.exists() and filecmp.cmp(source, target, shallow=False)):
+        print("Copying deno.exe")
+        shutil.copy2(source, target)
+
+    if subprocess.run([sys.executable, str(ROOT / "tools" / "fetch_ffmpeg.py")]).returncode:
+        print("\nCouldn't get ffmpeg.exe and ffprobe.exe; see above.")
+        return 1
 
     print(f"\nBuilt {EXE_PATH} ({EXE_PATH.stat().st_size / 1e6:.0f} MB) "
           f"in {time.time() - started:.0f}s.")
