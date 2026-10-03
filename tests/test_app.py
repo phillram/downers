@@ -7,7 +7,7 @@ from downers import app as A
 
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
-    for name in ("SETTINGS_FILE", "QUEUE_FILE", "ARCHIVE_FILE"):
+    for name in ("SETTINGS_FILE", "QUEUE_FILE", "ARCHIVE_FILE", "RESUME_DIR"):
         monkeypatch.setattr(A, name, tmp_path / getattr(A, name).name)
     monkeypatch.setattr(A, "DATA_DIR", tmp_path)
     return tmp_path
@@ -99,3 +99,26 @@ def test_popups_open_centered_over_the_window(app, show, attr):
     main_cy = app.winfo_rooty() + app.winfo_height() // 2
     pop_cy = pop.winfo_rooty() + pop.winfo_height() // 2
     assert abs(main_cx - pop_cx) < 20 and abs(main_cy - pop_cy) < 40
+
+
+def test_log_is_capped_in_memory_and_in_the_open_window(app):
+    app._show_log()
+    app.update()
+    app._log_many([(f"line {i}", "info") for i in range(A.LOG_LIMIT * 2)])
+    for i in range(500):
+        app._log(f"more {i}")
+    assert len(app.log_lines) == A.LOG_LIMIT
+    shown = int(app.log_text.index("end-1c").split(".")[0]) - 1
+    assert shown == A.LOG_LIMIT
+    assert app.log_text.get("end-2l", "end-1c").strip() == "more 499"
+
+
+def test_a_flood_of_updates_stays_small(app):
+    app._add_from_text("https://youtu.be/a")
+    job = next(iter(app.jobs.values()))
+    for i in range(100_000):
+        app._emit(job, status="Downloading", progress=f"{i}%")
+        app._emit(job, log=f"line {i}")
+    assert len(app.pending) == 1 and len(app.pending_log) == A.LOG_LIMIT
+    app._pump()
+    assert job.progress == "99999%" and not app.pending

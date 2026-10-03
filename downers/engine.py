@@ -12,10 +12,14 @@ skips anything already finished, so resuming is just running the job again.
 
 from __future__ import annotations
 
+import gc
+import glob
 import itertools
 import shlex
 import shutil
 import threading
+import time
+import uuid
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Callable
@@ -31,6 +35,7 @@ AUDIO_FORMATS = ["original", "mp3", "m4a", "opus", "flac", "wav"]
 AUDIO_QUALITIES = ["best", "320", "256", "192", "128", "96"]
 BROWSERS = ["", "firefox", "chrome", "edge", "brave", "opera", "vivaldi"]
 SPONSOR_CATEGORIES = "sponsor,selfpromo,interaction"
+PROGRESS_INTERVAL = 0.25  # seconds between progress reports per download
 
 SINGLE_TEMPLATE = "%(title)s.%(ext)s"
 PLAYLIST_TEMPLATE = "%(playlist_title)s/%(playlist_index)s - %(title)s.%(ext)s"
@@ -144,7 +149,7 @@ def build_argv(s: Settings, archive_file: Path | None = None) -> list[str]:
     argv.append("--yes-playlist" if s.whole_playlist else "--no-playlist")
     if s.items.strip():
         argv += ["-I", s.items.strip()]
-    if s.archive and archive_file:
+    if archive_file:
         argv += ["--download-archive", str(archive_file)]
     if s.cookies_file.strip():
         argv += ["--cookies", s.cookies_file.strip()]
@@ -181,6 +186,10 @@ class Job:
     errors: int = 0
     id: int = field(default_factory=lambda: next(_ids))
     stop: threading.Event = field(default_factory=threading.Event, repr=False)
+    key: str = field(default_factory=lambda: uuid.uuid4().hex)  # names its resume file
+    # .part files of downloads in progress, so Remove can delete them. Each leaves
+    # the set as it finishes, so a long channel doesn't grow it.
+    partials: set[str] = field(default_factory=set, repr=False)
 
     @property
     def active(self) -> bool:
@@ -188,7 +197,8 @@ class Job:
 
     def to_dict(self) -> dict:
         return {"url": self.url, "title": self.title, "status": self.status,
-                "settings": self.settings.to_dict()}
+                "settings": self.settings.to_dict(), "partials": sorted(self.partials),
+                "key": self.key}
 
     @classmethod
     def from_dict(cls, data: dict) -> "Job":
@@ -196,7 +206,28 @@ class Job:
         if status not in ("Done", "Error", "Paused", "Queued"):
             status = "Paused"   # was running when the app closed
         return cls(url=data["url"], title=data.get("title", ""), status=status,
-                   settings=Settings.from_dict(data.get("settings", {})))
+                   settings=Settings.from_dict(data.get("settings", {})),
+                   partials=set(data.get("partials", [])),
+                   **({"key": data["key"]} if data.get("key") else {}))
+
+    def discard_partials(self) -> int:
+        """Delete this job's unfinished files. Only names yt-dlp gives partial
+        files, so a finished download can never be hit."""
+        count = 0
+        for part in self.partials:
+            path = Path(part)
+            if not path.name.endswith(".part"):
+                continue
+            final = path.with_name(path.name[:-len(".part")])
+            for f in [path, final.with_name(final.name + ".ytdl"),
+                      *path.parent.glob(glob.escape(path.name) + "-Frag*")]:
+                try:
+                    f.unlink()
+                    count += 1
+                except OSError:
+                    pass
+        self.partials.clear()
+        return count
 
 
 class _Logger:
@@ -236,11 +267,22 @@ def run(job: Job, emit: Callable, archive_file: Path | None = None) -> None:
         i, n = info.get("playlist_index"), info.get("n_entries") or info.get("playlist_count")
         return f"[{i}/{n}] " if i and n else ""
 
+    last_report = [0.0]
+
     def progress(d):
         if job.stop.is_set():
             raise DownloadCancelled("Paused")
         info = d.get("info_dict", {})
+        if d["status"] == "downloading" and d.get("tmpfilename"):
+            job.partials.add(d["tmpfilename"])
+        elif d["status"] != "downloading":
+            job.partials.discard(d.get("tmpfilename") or f"{d.get('filename')}.part")
         if d["status"] == "downloading":
+            # yt-dlp calls this for every chunk, hundreds of times a second when fast
+            now = time.monotonic()
+            if now - last_report[0] < PROGRESS_INTERVAL:
+                return
+            last_report[0] = now
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             pct = f"{d['downloaded_bytes'] / total * 100:.0f}%" if total else ""
             speed = (d.get("_speed_str") or "").strip()
@@ -289,6 +331,11 @@ def run(job: Job, emit: Callable, archive_file: Path | None = None) -> None:
             emit(job, status="Error", progress=str(e).splitlines()[0][:120], level="error",
                  log=f"Failed: {e}")
         return
+    finally:
+        # Interrupting a download that comes in pieces (HLS, DASH) leaves yt-dlp's
+        # half-written file open inside a reference cycle, and resuming then fails
+        # with "file in use". Collecting the cycle closes it.
+        gc.collect()
 
     if job.stop.is_set():
         emit(job, status="Paused", progress="Paused: resume to continue")

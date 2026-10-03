@@ -83,3 +83,21 @@ def test_cookies_file_wins_over_browser():
     o = opts(cookies="firefox", cookies_file="C:/cookies.txt")
     assert o["cookiefile"] == "C:/cookies.txt"
     assert not o.get("cookiesfrombrowser")
+
+
+def test_discard_partials_deletes_only_unfinished_files(tmp_path):
+    part = tmp_path / "Video.mp4.part"
+    leftovers = [part, tmp_path / "Video.mp4.part-Frag1.part", tmp_path / "Video.mp4.ytdl"]
+    finished = [tmp_path / "Video.mp4", tmp_path / "Other.mp4"]
+    for f in leftovers + finished:
+        f.write_text("x")
+    job = Job("https://x", Settings(), partials={str(part), str(tmp_path / "Other.mp4")})
+    assert job.discard_partials() == 3
+    assert [f.exists() for f in leftovers] == [False] * 3
+    assert all(f.exists() for f in finished)
+    assert not job.partials
+
+
+def test_partials_survive_a_restart():
+    job = Job("https://x", Settings(), partials={"C:/a.mp4.part"})
+    assert Job.from_dict(job.to_dict()).partials == {"C:/a.mp4.part"}

@@ -54,7 +54,8 @@ and the queue is back next time. Only one Downers runs at a time; opening it aga
 open one forward.
 
 Right-click a row to open its folder, copy its link, or copy the equivalent yt-dlp command.
-Double-click opens the folder. Delete removes the row; downloaded files stay.
+Double-click opens the folder. **Remove** (or Delete) takes a row off the queue. Finished files
+stay; for an unfinished download it asks, then deletes the partial files.
 
 ### Options
 
@@ -103,7 +104,8 @@ pip install pytest
 python -m pytest
 ```
 
-The window tests open real windows, so they need a desktop session.
+The window tests open real windows, so they need a desktop session. Tests that download for
+real are skipped unless `DOWNERS_NETWORK_TESTS=1` is set.
 
 ```
 downers/

@@ -20,5 +20,9 @@ DATA_DIR = Path(os.environ.get("APPDATA", Path.home())) / "Downers"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 QUEUE_FILE = DATA_DIR / "queue.json"
 ARCHIVE_FILE = DATA_DIR / "archive.txt"
+# Per queued link: the IDs of its finished items, so Resume skips them by ID. Without
+# it, audio kept in its original format downloads all over again, because the file
+# on disk (.opus, .m4a) isn't the name yt-dlp checks for.
+RESUME_DIR = DATA_DIR / "resume"
 # A newer yt-dlp fetched by "Update yt-dlp", used in preference to the bundled one
 YTDLP_OVERRIDE = DATA_DIR / "yt-dlp"

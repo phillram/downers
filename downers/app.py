@@ -5,12 +5,13 @@ from __future__ import annotations
 import ctypes
 import json
 import os
-import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import tkinter as tk
+from collections import deque
 from pathlib import Path
 from tkinter import filedialog, font, messagebox, ttk
 
@@ -19,11 +20,14 @@ import yt_dlp
 from downers import __version__, engine, updater
 from downers.engine import Job, Settings
 from downers.paths import (APP_DIR, ARCHIVE_FILE, DATA_DIR, FROZEN, ICON, QUEUE_FILE,
-                           SETTINGS_FILE)
+                           RESUME_DIR, SETTINGS_FILE)
 
 BG, PANEL, FIELD, HOVER = "#1e1f22", "#2b2d31", "#383a40", "#4e5058"
 FG, MUTED, ACCENT = "#e6e6e6", "#9a9ca3", "#5865f2"
 GOOD, WARN, BAD = "#3ba55d", "#faa61a", "#ed4245"
+
+LOG_LIMIT = 3000  # lines kept, in memory and in the log window
+LOG_LINE_LIMIT = 2000  # characters per line; Tk slows to a crawl on huge lines
 
 # Display label -> settings value, for each drop-down
 VIDEO_Q = {"Best": "best", "2160p 4K": "2160", "1440p": "1440", "1080p": "1080",
@@ -55,6 +59,14 @@ def dark_title_bar(window: tk.Misc) -> None:
         ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, flags)
     except Exception:
         pass
+
+
+def write_json(path: Path, data) -> None:
+    """Write via a temporary file and swap it in, so a crash or power cut mid-write
+    can't leave half a queue behind (which would read back as an empty one)."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def on_screen(geometry: str) -> bool:
@@ -99,11 +111,16 @@ class App(tk.Tk):
             pass
         DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-        self.events: queue.Queue = queue.Queue()
+        # Worker threads report here and the UI thread applies it in _pump. Changes for
+        # a job merge into one entry, and new log lines go into a capped buffer, so
+        # however fast downloads report, what's waiting stays small.
+        self.lock = threading.Lock()
+        self.pending: dict[int, dict] = {}
+        self.pending_log: deque[tuple[int, str, str]] = deque(maxlen=LOG_LIMIT)
         self.jobs: dict[int, Job] = {}
         self.threads: dict[int, threading.Thread] = {}
         self.remove_when_stopped: set[int] = set()
-        self.log_lines: list[tuple[str, str]] = []
+        self.log_lines: deque[tuple[str, str]] = deque(maxlen=LOG_LIMIT)
         self.log_window: tk.Toplevel | None = None
         self.options_window: tk.Toplevel | None = None
 
@@ -137,6 +154,11 @@ class App(tk.Tk):
                 self._add_job(Job.from_dict(data))
             except Exception:
                 pass
+        # Resume files whose link is gone, e.g. after a crash
+        keys = {j.key for j in self.jobs.values()}
+        for f in RESUME_DIR.glob("*.txt"):
+            if f.stem not in keys:
+                f.unlink(missing_ok=True)
         self._log(f"Downers {__version__}, yt-dlp {yt_dlp.version.__version__}"
                   + (" (updated copy)" if updater.active else ""), "muted")
         if not engine.ffmpeg_path():
@@ -161,6 +183,10 @@ class App(tk.Tk):
             self.state("zoomed")
         self.pump_job = self.after(100, self._pump)
         self._schedule()
+        if FROZEN:
+            # Later, so a copy that's just restarted us has finished exiting
+            self.after(30000, lambda: threading.Thread(target=clean_stale_unpacks,
+                                                       daemon=True).start())
 
     # ------------------------------------------------------------------ look
 
@@ -223,7 +249,7 @@ class App(tk.Tk):
         # Pause and Resume act on the selection, or on everything if nothing is selected
         for text, cmd in (("Pause", lambda: self._for_selected(self._pause, all_if_none=True)),
                           ("Resume", lambda: self._for_selected(self._resume, all_if_none=True)),
-                          ("Remove", lambda: self._for_selected(self._remove)),
+                          ("Remove", self._remove_selected),
                           ("Clear done", self._clear_done)):
             ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(0, 4))
         ttk.Button(bar, text="Log", command=self._show_log).pack(side="right")
@@ -293,17 +319,18 @@ class App(tk.Tk):
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Button-3>", self._context_menu)
         self.tree.bind("<Double-1>", self._double_click)
-        self.tree.bind("<Delete>", lambda e: self._for_selected(self._remove))
+        self.tree.bind("<Delete>", lambda e: self._remove_selected())
 
         self.menu = tk.Menu(self, tearoff=False)
         for text, fn in (("Pause", self._pause), ("Resume / retry", self._resume),
-                         ("Remove", self._remove), (None, None),
+                         ("Remove", None), (None, None),
                          ("Open folder", self._open_job_folder), ("Copy link", self._copy_link),
                          ("Copy yt-dlp command", self._copy_command)):
             if text is None:
                 self.menu.add_separator()
             else:
-                self.menu.add_command(label=text, command=lambda f=fn: self._for_selected(f))
+                self.menu.add_command(label=text, command=self._remove_selected if fn is None
+                                      else lambda f=fn: self._for_selected(f))
 
     def _sync_controls(self):
         video = self.v["mode"].get() == "video"
@@ -346,10 +373,10 @@ class App(tk.Tk):
             data = self.current_settings().to_dict() | {
                 "parallel": self.parallel.get(), "geometry": self.normal_geometry,
                 "maximized": self.state() == "zoomed"}
-            SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            write_json(SETTINGS_FILE, data)
             jobs = [j.to_dict() for j in self.jobs.values()
                     if j.status != "Done" and j.id not in self.remove_when_stopped]
-            QUEUE_FILE.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+            write_json(QUEUE_FILE, jobs)
         except (OSError, tk.TclError):
             pass
 
@@ -402,44 +429,63 @@ class App(tk.Tk):
                 t.start()
         self._refresh_status()
 
+    @staticmethod
+    def _resume_file(job: Job) -> Path:
+        return RESUME_DIR / f"{job.key}.txt"
+
     def _worker(self, job: Job):
-        archive = ARCHIVE_FILE if job.settings.archive else None
+        # "Remember finished videos" already skips by ID; otherwise this link's own list
+        if job.settings.archive:
+            archive = ARCHIVE_FILE
+        else:
+            RESUME_DIR.mkdir(parents=True, exist_ok=True)
+            archive = self._resume_file(job)
         try:
             engine.run(job, self._emit, archive)
         except Exception as e:
             self._emit(job, status="Error", progress=str(e)[:120], log=f"Failed: {e}",
                        level="error")
-        self.events.put((job.id, {"_finished": True}))
+        self._emit(job, _finished=True)
 
     def _emit(self, job: Job, **changes):
         """Called from worker threads; the UI thread applies it in _pump."""
-        self.events.put((job.id, changes))
+        with self.lock:
+            if "log" in changes:
+                self.pending_log.append((job.id, changes.pop("log")[:LOG_LINE_LIMIT],
+                                         changes.pop("level", "info")))
+            changes.pop("level", None)
+            if changes:
+                self.pending.setdefault(job.id, {}).update(changes)
 
     def _pump(self):
-        try:
-            while True:
-                job_id, ch = self.events.get_nowait()
-                job = self.jobs.get(job_id)
-                if job is None:
+        with self.lock:
+            pending, self.pending = self.pending, {}
+            logs = list(self.pending_log)
+            self.pending_log.clear()
+        self._log_many([(f"#{job_id} {text}", level) for job_id, text, level in logs])
+        finished = False
+        for job_id, ch in pending.items():
+            job = self.jobs.get(job_id)
+            if job is None:
+                continue
+            for key in ("status", "progress", "title"):
+                if key in ch:
+                    setattr(job, key, ch[key])
+            if ch.get("_finished"):
+                finished = True
+                self.threads.pop(job_id, None)
+                if job.status == "Done":
+                    self._resume_file(job).unlink(missing_ok=True)
+                if job_id in self.remove_when_stopped:
+                    job.discard_partials()
+                    self._forget(job)
                     continue
-                if "log" in ch:
-                    level = ch.get("level", "info")
-                    self._log(f"#{job.id} {ch['log']}", level)
-                for key in ("status", "progress", "title"):
-                    if key in ch:
-                        setattr(job, key, ch[key])
-                if ch.get("_finished"):
-                    self.threads.pop(job_id, None)
-                    if job_id in self.remove_when_stopped:
-                        self._forget(job)
-                    self._save()
-                    self._schedule()
-                else:
-                    self._update_row(job)
-                    if "status" in ch:
-                        self._refresh_status()
-        except queue.Empty:
-            pass
+            self._update_row(job)
+        if finished:
+            self._save()
+            self._schedule()
+        elif pending:
+            self._refresh_status()
         self.pump_job = self.after(150, self._pump)
 
     def _refresh_status(self):
@@ -476,15 +522,30 @@ class App(tk.Tk):
             job.status, job.progress = "Queued", ""
             self._update_row(job)
 
+    def _remove_selected(self):
+        jobs = [self.jobs[int(i)] for i in self.tree.selection() if int(i) in self.jobs]
+        unfinished = [j for j in jobs if j.partials or j.id in self.threads]
+        if unfinished and not messagebox.askyesno(
+                "Downers", f"Remove {len(unfinished)} unfinished download(s) and delete "
+                           "their partial files?\nFinished files are kept.", parent=self):
+            return
+        for job in jobs:
+            self._remove(job)
+        self._save()
+        self._schedule()
+
     def _remove(self, job: Job):
         if job.id in self.threads:
+            # Its files are still open; _pump deletes them once it has stopped
             job.stop.set()
             self.remove_when_stopped.add(job.id)
             self.tree.delete(str(job.id))
         else:
+            job.discard_partials()
             self._forget(job)
 
     def _forget(self, job: Job):
+        self._resume_file(job).unlink(missing_ok=True)
         self.jobs.pop(job.id, None)
         self.remove_when_stopped.discard(job.id)
         if self.tree.exists(str(job.id)):
@@ -540,16 +601,24 @@ class App(tk.Tk):
         os.startfile(path)
 
     def _log(self, text: str, level: str = "info"):
-        self.log_lines.append((text, level))
-        del self.log_lines[:-3000]
-        if self.log_window is not None:
-            self._append_log(text, level)
+        self._log_many([(text, level)])
 
-    def _append_log(self, text, level):
+    def _log_many(self, lines: list[tuple[str, str]]):
+        lines = lines[-LOG_LIMIT:]
+        self.log_lines.extend(lines)  # a deque: the oldest drop off
+        if self.log_window is not None and lines:
+            self._append_log(lines)
+
+    def _append_log(self, lines):
         box = self.log_text
         at_end = box.yview()[1] > 0.99
         box.configure(state="normal")
-        box.insert("end", text + "\n", level)
+        # One insert for the whole batch: text, tag, text, tag, ...
+        box.insert("end", *(x for text, level in lines for x in (text + "\n", level)))
+        # The open window obeys the same limit as the stored log
+        excess = int(box.index("end-1c").split(".")[0]) - 1 - LOG_LIMIT
+        if excess > 0:
+            box.delete("1.0", f"{excess + 1}.0")
         box.configure(state="disabled")
         if at_end:
             box.see("end")
@@ -599,8 +668,8 @@ class App(tk.Tk):
         self.log_text.pack(fill="both", expand=True)
         for tag, color in (("info", FG), ("muted", MUTED), ("warn", WARN), ("error", BAD)):
             self.log_text.tag_configure(tag, foreground=color)
-        for text, level in self.log_lines:
-            self._append_log(text, level)
+        if self.log_lines:
+            self._append_log(list(self.log_lines))
         self.log_text.see("end")
 
     def _file_picker(self, parent, key):
@@ -719,6 +788,17 @@ class App(tk.Tk):
     def destroy(self):
         self.after_cancel(self.pump_job)
         super().destroy()
+
+
+def clean_stale_unpacks() -> None:
+    """Downers.exe unpacks itself into %TEMP%\\_MEI…, removed again on a normal exit.
+    A crash or a forced close leaves it behind (about 35 MB each), so clear out
+    earlier ones. Only folders holding our icon, never our own, and anything
+    still in use simply fails to delete."""
+    own = Path(getattr(sys, "_MEIPASS", "")).resolve()
+    for folder in Path(os.environ.get("TEMP", "")).glob("_MEI*"):
+        if folder.resolve() != own and (folder / ICON.name).exists():
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 _instance_lock = None
